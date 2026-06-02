@@ -1,9 +1,9 @@
 import React from "react";
-import { useProfile, useServers } from "@/hooks/use-bytenut";
+import { useProfile, useServers, useBalance } from "@/hooks/use-bytenut";
 import { useAuth } from "@/context/AuthContext";
 import { ServerCard } from "@/components/server-card";
 import { Button } from "@/components/ui/button";
-import { LogOut, User, Activity, Wallet, CreditCard, Clock, Globe } from "lucide-react";
+import { LogOut, User, Activity, Wallet, CreditCard, Globe, Star } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useLocation } from "wouter";
 
@@ -12,6 +12,7 @@ export default function Dashboard() {
   const [, setLocation] = useLocation();
   const { data: profileRes, isLoading: loadingProfile, isError: errorProfile } = useProfile();
   const { data: serversRes, isLoading: loadingServers, isError: errorServers } = useServers();
+  const { data: balanceRes } = useBalance();
 
   React.useEffect(() => {
     if (errorProfile) {
@@ -21,6 +22,7 @@ export default function Dashboard() {
 
   const profile = profileRes?.profile?.data;
   const servers = serversRes?.servers?.data || [];
+  const balance = balanceRes?.balance;
 
   return (
     <div className="min-h-screen bg-background font-mono text-foreground p-4 md:p-8">
@@ -44,7 +46,7 @@ export default function Dashboard() {
         </header>
 
         {/* Profile Stats */}
-        <section className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <section className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
           {loadingProfile ? (
             Array.from({ length: 4 }).map((_, i) => (
               <Skeleton key={i} className="h-24 rounded-lg bg-card/50" />
@@ -64,9 +66,14 @@ export default function Dashboard() {
                 <div className="bg-secondary p-3 rounded-md text-muted-foreground">
                   <Wallet className="w-5 h-5" />
                 </div>
-                <div>
+                <div className="min-w-0">
                   <p className="text-xs text-muted-foreground mb-1">BALANCE</p>
-                  <p className="font-bold">${profile.money.toFixed(2)}</p>
+                  <p className="font-bold">${(balance?.total ?? profile.money).toFixed(2)}</p>
+                  {balance && balance.inviteMoney > 0 && (
+                    <p className="text-[10px] text-muted-foreground mt-0.5">
+                      ${balance.money.toFixed(2)} + ${balance.inviteMoney.toFixed(2)} invite
+                    </p>
+                  )}
                 </div>
               </div>
               <div className="bg-card border border-border p-4 rounded-lg flex items-center gap-4">
@@ -75,7 +82,21 @@ export default function Dashboard() {
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground mb-1">POINTS</p>
-                  <p className="font-bold">{profile.point}</p>
+                  <p className="font-bold">{balance?.points ?? profile.point}</p>
+                </div>
+              </div>
+              <div className="bg-card border border-border p-4 rounded-lg flex items-center gap-4">
+                <div className="bg-secondary p-3 rounded-md text-muted-foreground">
+                  <Star className="w-5 h-5" />
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1">VIP</p>
+                  <p className="font-bold text-sm">{balance?.vipLevel ?? profile.vipLevel ?? "NORMAL"}</p>
+                  {balance && balance.consumeAll > 0 && (
+                    <p className="text-[10px] text-muted-foreground mt-0.5">
+                      ${balance.consumeAll.toFixed(2)} spent
+                    </p>
+                  )}
                 </div>
               </div>
               <div className="bg-card border border-border p-4 rounded-lg flex items-center gap-4">

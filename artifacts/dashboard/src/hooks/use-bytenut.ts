@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getProfile, getServers, login, getExtensionInfo, extendServer, getAutoExtendConfig, setAutoExtendConfig } from "@/lib/api";
+import { getProfile, getServers, login, getExtensionInfo, extendServer, getAutoExtendConfig, setAutoExtendConfig, getBalance } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 
 export function useLogin() {
@@ -23,7 +23,19 @@ export function useProfile() {
     queryKey: ["profile", creds?.username],
     queryFn: () => getProfile(creds!.username, creds!.password),
     enabled: isAuthenticated && !!creds,
-    staleTime: 1000 * 60 * 5, // 5 mins
+    staleTime: 1000 * 60 * 5,
+  });
+}
+
+export function useBalance() {
+  const { creds, isAuthenticated } = useAuth();
+
+  return useQuery({
+    queryKey: ["balance", creds?.username],
+    queryFn: () => getBalance(creds!.username, creds!.password),
+    enabled: isAuthenticated && !!creds,
+    staleTime: 1000 * 60 * 2,
+    refetchInterval: 1000 * 60 * 2,
   });
 }
 
