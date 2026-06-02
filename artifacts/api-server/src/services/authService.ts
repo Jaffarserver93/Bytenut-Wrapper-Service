@@ -67,6 +67,163 @@ async function waitForCloudflare(
   );
 }
 
+export async function extendServerWithBrowser(
+  serverId: string,
+  ylToken: string,
+  proxy: ProxyConfig | null = null,
+): Promise<{ success: boolean; message: string; data?: unknown }> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { connect } = _require("puppeteer-real-browser") as any;
+  const effectiveProxy = proxy ?? getProxyFromEnv();
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let browser: any = null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let page: any = null;
+
+  try {
+    const result = await connect({
+      headless: false,
+      turnstile: true,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--window-size=1280,800",
+      ],
+      proxy: effectiveProxy
+        ? { host: effectiveProxy.host, port: effectiveProxy.port }
+        : {},
+      customConfig: {},
+      connectOption: {},
+    });
+
+    browser = result.browser;
+    page = result.page;
+
+    await page.setViewport({ width: 1280, height: 800 });
+
+    if (effectiveProxy?.username && effectiveProxy?.password) {
+      await page.authenticate({
+        username: effectiveProxy.username,
+        password: effectiveProxy.password,
+      });
+    }
+
+    // Intercept the extend-time API response to know success/failure
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let extendResult: any = null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    page.on("response", async (response: any) => {
+      const url: string = response.url();
+      if (url.includes("extend-time")) {
+        try {
+          extendResult = await response.json().catch(() => null);
+          logger.info({ url, extendResult }, "Intercepted extend-time response");
+        } catch { /* ignore */ }
+      }
+    });
+
+    // Warm up Cloudflare cookies on homepage
+    logger.info({ serverId }, "Warming up Cloudflare cookies for extend...");
+    await page.goto(BYTENUT_BASE_URL, { waitUntil: "domcontentloaded", timeout: 45000 });
+    await waitForCloudflare(page, 30000);
+
+    // Inject cached yl-token so the page loads as authenticated
+    await page.evaluate((token: string) => {
+      localStorage.setItem("yl-token", token);
+    }, ylToken);
+
+    // Navigate to the free server panel page
+    logger.info({ serverId }, "Navigating to free-gamepanel page...");
+    await page.goto(`${BYTENUT_BASE_URL}/free-gamepanel/${serverId}`, {
+      waitUntil: "domcontentloaded",
+      timeout: 45000,
+    });
+    await waitForCloudflare(page, 30000);
+    await sleep(4000); // Let the Vue app fully render
+
+    // Dump page buttons for diagnostics
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pageButtons: string[] = await page.evaluate((): string[] =>
+      Array.from((document as any).querySelectorAll("button, [class*='button'], [role='button']")).map(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (el: any) => `class="${el.className}" text="${el.textContent?.trim().slice(0, 60)}"`,
+      ),
+    );
+    logger.info({ pageButtons }, "Buttons on free-gamepanel page");
+
+    // Try known selectors first
+    const EXTEND_SELECTORS = [
+      ".free-server-cta",
+      "[class*='free-server-cta']",
+      "[class*='free-server-button']",
+    ];
+
+    let clicked = false;
+    for (const sel of EXTEND_SELECTORS) {
+      const handle = await page.$(sel).catch(() => null);
+      if (handle) {
+        await handle.click();
+        clicked = true;
+        logger.info({ selector: sel, serverId }, "Clicked extend button via selector");
+        break;
+      }
+    }
+
+    if (!clicked) {
+      // Fallback: find by text containing "+" and "min"
+      clicked = await page.evaluate((): boolean => {
+        const all = Array.from(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (document as any).querySelectorAll("button, [class*='button'], [role='button']"),
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ) as any[];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const btn = all.find((el: any) => {
+          const text = (el.textContent ?? "").trim().toLowerCase();
+          return (text.includes("+") && text.includes("min")) || text.includes("extend");
+        });
+        if (btn) { btn.click(); return true; }
+        return false;
+      });
+      if (clicked) logger.info({ serverId }, "Clicked extend button via text content");
+    }
+
+    if (!clicked) {
+      throw new Error("Could not find the extend button on the free-gamepanel page");
+    }
+
+    // Wait for Turnstile to be solved and extend-time request to complete (up to 35s)
+    logger.info({ serverId }, "Waiting for Turnstile solve and extend-time response...");
+    const deadline = Date.now() + 35000;
+    while (Date.now() < deadline && extendResult === null) {
+      await sleep(500);
+    }
+
+    if (extendResult !== null) {
+      if (extendResult.code === 200) {
+        return { success: true, message: "Server extended successfully", data: extendResult };
+      }
+      return {
+        success: false,
+        message: extendResult.message ?? "Extend returned non-200",
+        data: extendResult,
+      };
+    }
+
+    // No response intercepted in time — treat button click as best-effort
+    return { success: true, message: "Extend button clicked (no response intercepted)" };
+  } catch (err) {
+    logger.error({ err, serverId }, "Browser extend failed");
+    throw err;
+  } finally {
+    if (page) await page.close().catch(() => {});
+    if (browser) await browser.close().catch(() => {});
+  }
+}
+
 export async function loginWithBrowser(
   username: string,
   password: string,

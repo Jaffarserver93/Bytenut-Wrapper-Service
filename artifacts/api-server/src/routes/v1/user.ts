@@ -1,5 +1,5 @@
 import { Router, type IRouter, type Request, type Response } from "express";
-import { loginWithBrowser, getProxyFromEnv } from "../../services/authService.js";
+import { loginWithBrowser, getProxyFromEnv, extendServerWithBrowser } from "../../services/authService.js";
 import {
   getCachedToken,
   setCachedToken,
@@ -213,45 +213,16 @@ router.post("/extend/:serverId", async (req: Request, res: Response) => {
   };
 
   try {
-    let token = await getOrFreshToken();
+    const token = await getOrFreshToken();
+    req.log.info({ username, serverId }, "Starting browser-based extend...");
+    const result = await extendServerWithBrowser(serverId, token, proxy);
 
-    let res2 = await httpClient.post(
-      `https://www.bytenut.com/game-panel/api/gp-free-server/extend/${serverId}`,
-      {},
-      {
-        headers: {
-          Accept: "application/json, text/plain, */*",
-          "yl-token": token,
-          "Content-Type": "application/json",
-        },
-        validateStatus: () => true,
-      },
-    );
-
-    if (res2.status === 401) {
-      req.log.warn({ username }, "Got 401 on extend — retrying with fresh token");
-      invalidateCachedToken(username);
-      token = await getOrFreshToken();
-      res2 = await httpClient.post(
-        `https://www.bytenut.com/game-panel/api/gp-free-server/extend/${serverId}`,
-        {},
-        {
-          headers: {
-            Accept: "application/json, text/plain, */*",
-            "yl-token": token,
-            "Content-Type": "application/json",
-          },
-          validateStatus: () => true,
-        },
-      );
-    }
-
-    if (res2.status >= 400) {
-      res.status(res2.status).json({ error: "Upstream request failed", upstreamStatus: res2.status, detail: res2.data });
+    if (!result.success) {
+      res.status(400).json({ error: result.message, detail: result.data });
       return;
     }
 
-    res.json({ result: res2.data });
+    res.json({ success: true, message: result.message, detail: result.data });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     req.log.error({ username, serverId, err }, "Extend server failed");
