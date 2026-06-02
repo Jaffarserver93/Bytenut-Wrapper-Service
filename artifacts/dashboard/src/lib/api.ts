@@ -1,5 +1,25 @@
 export const API_BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
+export async function getExtensionInfo(username: string, password: string, serverId: string) {
+  const res = await fetch(`${API_BASE}/api/v1/user/extension-info/${serverId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!res.ok) throw new Error("Failed to fetch extension info");
+  return res.json();
+}
+
+export async function extendServer(username: string, password: string, serverId: string) {
+  const res = await fetch(`${API_BASE}/api/v1/user/extend/${serverId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!res.ok) throw new Error("Failed to extend server");
+  return res.json();
+}
+
 export async function login(username: string, password: string) {
   const res = await fetch(`${API_BASE}/api/v1/auth/login`, {
     method: "POST",

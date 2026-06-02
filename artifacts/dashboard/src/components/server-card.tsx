@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Activity, Cpu, HardDrive, MemoryStick, Clock, AlertTriangle } from "lucide-react";
+import { ServerRenewPanel } from "@/components/server-renew-panel";
 
 interface ServerData {
   id: string;
@@ -126,6 +127,8 @@ export function ServerCard({ server }: ServerCardProps) {
             <span className="text-sm">{formatUptime(utilization.uptime)}</span>
           </div>
         </div>
+
+        <ServerRenewPanel serverId={String(server.id)} />
       </CardContent>
     </Card>
   );
