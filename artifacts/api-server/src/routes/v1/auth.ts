@@ -1,9 +1,6 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { loginWithBrowser, getProxyFromEnv } from "../../services/authService.js";
-import {
-  getCachedToken,
-  setCachedToken,
-} from "../../services/tokenCache.js";
+import { getOrAcquireToken } from "../../services/tokenCache.js";
 
 const router: IRouter = Router();
 
@@ -14,23 +11,16 @@ router.post("/login", async (req: Request, res: Response) => {
   };
 
   if (!username || !password) {
-    res.status(400).json({
-      error: "username and password are required",
-    });
-    return;
-  }
-
-  const cached = getCachedToken(username);
-  if (cached) {
-    req.log.info({ username }, "Returning cached yl-token");
-    res.json({ ylToken: cached, cached: true });
+    res.status(400).json({ error: "username and password are required" });
     return;
   }
 
   try {
-    req.log.info({ username }, "No cached token — starting browser auth");
-    const ylToken = await loginWithBrowser(username, password, getProxyFromEnv());
-    setCachedToken(username, ylToken);
+    const proxy = getProxyFromEnv();
+    const ylToken = await getOrAcquireToken(username, () => {
+      req.log.info({ username }, "No cached token — starting browser auth");
+      return loginWithBrowser(username, password, proxy);
+    });
     res.json({ ylToken, cached: false });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

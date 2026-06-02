@@ -2,6 +2,15 @@ import app from "./app";
 import { logger } from "./lib/logger";
 import { startAutoExtendPoller } from "./services/autoExtendService";
 
+// Prevent unhandled socket/TLS errors (e.g. proxy ECONNRESET) from crashing the process
+process.on("uncaughtException", (err) => {
+  logger.error({ err }, "Uncaught exception — continuing");
+});
+
+process.on("unhandledRejection", (reason) => {
+  logger.error({ reason }, "Unhandled promise rejection — continuing");
+});
+
 const rawPort = process.env["PORT"];
 
 if (!rawPort) {
