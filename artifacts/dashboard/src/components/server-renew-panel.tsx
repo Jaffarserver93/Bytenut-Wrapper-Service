@@ -7,22 +7,28 @@ interface ServerRenewPanelProps {
   serverId: string;
 }
 
-function CircularCountdown({ expiredTime, totalMinutes }: { expiredTime: string; totalMinutes: number }) {
-  const [remaining, setRemaining] = useState<number>(0);
+function CircularCountdown({
+  initialRemainingSeconds,
+  fetchedAt,
+  totalMinutes,
+}: {
+  initialRemainingSeconds: number;
+  fetchedAt: number;
+  totalMinutes: number;
+}) {
+  const [remaining, setRemaining] = useState<number>(() =>
+    Math.max(0, initialRemainingSeconds - Math.floor((Date.now() - fetchedAt) / 1000)),
+  );
 
   useEffect(() => {
-    const expiry = new Date(expiredTime).getTime();
-
     const tick = () => {
-      const now = Date.now();
-      const diff = Math.max(0, Math.floor((expiry - now) / 1000));
-      setRemaining(diff);
+      const elapsed = Math.floor((Date.now() - fetchedAt) / 1000);
+      setRemaining(Math.max(0, initialRemainingSeconds - elapsed));
     };
-
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
-  }, [expiredTime]);
+  }, [initialRemainingSeconds, fetchedAt]);
 
   const totalSeconds = totalMinutes * 60;
   const fraction = totalSeconds > 0 ? Math.min(1, remaining / totalSeconds) : 0;
@@ -35,7 +41,6 @@ function CircularCountdown({ expiredTime, totalMinutes }: { expiredTime: string;
 
   const hours = Math.floor(remaining / 3600);
   const mins = Math.floor((remaining % 3600) / 60);
-  const secs = remaining % 60;
 
   const color =
     remaining > 30 * 60
@@ -44,10 +49,7 @@ function CircularCountdown({ expiredTime, totalMinutes }: { expiredTime: string;
         ? "#eab308"
         : "#ef4444";
 
-  const label =
-    hours > 0
-      ? `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}`
-      : `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  const label = `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}`;
 
   return (
     <div className="relative flex items-center justify-center" style={{ width: size, height: size }}>
@@ -78,7 +80,7 @@ function CircularCountdown({ expiredTime, totalMinutes }: { expiredTime: string;
           {label}
         </span>
         <span className="text-[9px] text-muted-foreground mt-0.5 tracking-widest uppercase">
-          {hours > 0 ? "h : m" : "m : s"}
+          remaining
         </span>
       </div>
     </div>
@@ -86,7 +88,7 @@ function CircularCountdown({ expiredTime, totalMinutes }: { expiredTime: string;
 }
 
 export function ServerRenewPanel({ serverId }: ServerRenewPanelProps) {
-  const { data, isLoading, isError } = useExtensionInfo(serverId);
+  const { data, isLoading, isError, dataUpdatedAt } = useExtensionInfo(serverId);
   const extend = useExtendServer(serverId);
 
   if (isLoading) {
@@ -103,7 +105,7 @@ export function ServerRenewPanel({ serverId }: ServerRenewPanelProps) {
   }
 
   const info = data.extensionInfo.data as {
-    expiredTime: string;
+    minutesUntilExpiration: number;
     extendMinutes: number;
     canExtend: boolean;
     minutesUntilNextExtension: number;
@@ -111,8 +113,9 @@ export function ServerRenewPanel({ serverId }: ServerRenewPanelProps) {
     extensionCount: number;
   };
 
-  const expiry = new Date(info.expiredTime);
-  const expiryLabel = expiry.toLocaleString(undefined, {
+  const initialRemainingSeconds = info.minutesUntilExpiration * 60;
+  const expiryMs = dataUpdatedAt + initialRemainingSeconds * 1000;
+  const expiryLabel = new Date(expiryMs).toLocaleString(undefined, {
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -125,7 +128,8 @@ export function ServerRenewPanel({ serverId }: ServerRenewPanelProps) {
     <div className="mt-4 pt-4 border-t border-border/50 space-y-3">
       <div className="flex items-center gap-4">
         <CircularCountdown
-          expiredTime={info.expiredTime}
+          initialRemainingSeconds={initialRemainingSeconds}
+          fetchedAt={dataUpdatedAt}
           totalMinutes={info.extendMinutes}
         />
         <div className="flex-1 min-w-0">
