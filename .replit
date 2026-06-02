@@ -40,7 +40,7 @@ PROXY_PASSWORD = "+5~q9LfVXCYp8"
 PROXY_HOST = "dc.oxylabs.io"
 PROXY_USERNAME = "user-jxfrjxfr_m3SkL-country-US"
 PROXY_PROTOCOL = "https"
-PROXY_PORT = "8000"
+PROXY_PORT = "8001"
 
 [nix]
 channel = "stable-25_05"
