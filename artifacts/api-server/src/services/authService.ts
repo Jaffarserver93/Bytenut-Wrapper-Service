@@ -33,36 +33,49 @@ export function getProxyFromEnv(): ProxyConfig | null {
 }
 
 /**
- * Build the --proxy-server Chrome arg and the proxy object for puppeteer-real-browser.
- * Credentials are embedded in the URL so Chrome uses them for CONNECT tunnel auth.
+ * Build the --proxy-server Chrome arg.
+ * Credentials are NOT embedded in the URL — Chrome ignores them for CONNECT tunnels.
+ * Use page.authenticate() instead (handles HTTP 407 proxy auth challenge properly).
  */
 function buildProxyArgs(proxy: ProxyConfig | null): string[] {
   if (!proxy) return [];
-  const { protocol, host, port, username, password } = proxy;
-  let proxyUrl: string;
-  if (username && password) {
-    const encodedUser = encodeURIComponent(username);
-    const encodedPass = encodeURIComponent(password);
-    proxyUrl = `${protocol}://${encodedUser}:${encodedPass}@${host}:${port}`;
-  } else {
-    proxyUrl = `${protocol}://${host}:${port}`;
-  }
+  const { protocol, host, port } = proxy;
   return [
-    `--proxy-server=${proxyUrl}`,
+    `--proxy-server=${protocol}://${host}:${port}`,
     "--ignore-certificate-errors",
+    "--ignore-certificate-errors-spki-list",
   ];
+}
+
+/**
+ * Build the proxy object for puppeteer-real-browser's connect() option.
+ * Includes credentials so the library can handle auth internally too.
+ */
+function buildConnectProxy(
+  proxy: ProxyConfig | null,
+): Record<string, unknown> {
+  if (!proxy) return {};
+  const obj: Record<string, unknown> = {
+    host: proxy.host,
+    port: proxy.port,
+  };
+  if (proxy.username) obj["username"] = proxy.username;
+  if (proxy.password) obj["password"] = proxy.password;
+  return obj;
 }
 
 async function waitForCloudflare(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   page: any,
-  maxWaitMs = 30000,
+  maxWaitMs = 45000,
 ): Promise<void> {
   const pollInterval = 2000;
   const deadline = Date.now() + maxWaitMs;
 
   while (Date.now() < deadline) {
     const title: string = await page.title().catch(() => "");
+    const url: string = page.url();
+
     if (
       title.includes("Attention Required") ||
       title.includes("Just a moment") ||
@@ -70,15 +83,17 @@ async function waitForCloudflare(
       title.includes("Please Wait") ||
       title.includes("DDoS protection") ||
       title.includes("One more step") ||
-      title.includes("Ray ID")
+      title.includes("Ray ID") ||
+      title.includes("Verifying you") ||
+      url.includes("challenges.cloudflare.com")
     ) {
       logger.info(
-        { title, url: page.url() },
-        "Cloudflare challenge active — waiting...",
+        { title, url },
+        "Cloudflare challenge active — waiting for Turnstile solve...",
       );
       await sleep(pollInterval);
     } else {
-      logger.info({ title, url: page.url() }, "Cloudflare challenge cleared");
+      logger.info({ title, url }, "Cloudflare challenge cleared");
       return;
     }
   }
@@ -90,6 +105,20 @@ async function waitForCloudflare(
   );
 }
 
+/**
+ * Common browser launch args for stealth / anti-detection.
+ */
+const STEALTH_ARGS = [
+  "--no-sandbox",
+  "--disable-setuid-sandbox",
+  "--disable-dev-shm-usage",
+  "--disable-gpu",
+  "--window-size=1280,800",
+  "--disable-blink-features=AutomationControlled",
+  "--disable-features=IsolateOrigins,site-per-process",
+  "--lang=en-US,en",
+];
+
 export async function extendServerWithBrowser(
   serverId: string,
   ylToken: string,
@@ -99,14 +128,21 @@ export async function extendServerWithBrowser(
   const { connect } = _require("puppeteer-real-browser") as any;
   const effectiveProxy = proxy ?? getProxyFromEnv();
   const proxyArgs = buildProxyArgs(effectiveProxy);
+  const connectProxy = buildConnectProxy(effectiveProxy);
 
   if (effectiveProxy) {
     logger.info(
-      { host: effectiveProxy.host, port: effectiveProxy.port, hasAuth: !!(effectiveProxy.username && effectiveProxy.password) },
+      {
+        host: effectiveProxy.host,
+        port: effectiveProxy.port,
+        hasAuth: !!(effectiveProxy.username && effectiveProxy.password),
+      },
       "Using proxy for browser session (extend)",
     );
   } else {
-    logger.warn("No proxy configured for extend — Cloudflare may block this datacenter IP.");
+    logger.warn(
+      "No proxy configured for extend — Cloudflare WILL block this datacenter IP.",
+    );
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -118,17 +154,9 @@ export async function extendServerWithBrowser(
     const result = await connect({
       headless: false,
       turnstile: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--window-size=1280,800",
-        ...proxyArgs,
-      ],
-      proxy: effectiveProxy
-        ? { host: effectiveProxy.host, port: effectiveProxy.port }
-        : {},
+      fingerprint: true,
+      args: [...STEALTH_ARGS, ...proxyArgs],
+      proxy: connectProxy,
       customConfig: {},
       connectOption: {},
     });
@@ -138,12 +166,13 @@ export async function extendServerWithBrowser(
 
     await page.setViewport({ width: 1280, height: 800 });
 
-    // Also set page-level auth as a fallback for proxy providers that use 407
+    // Set proxy auth BEFORE any navigation — handles HTTP 407 proxy auth challenge
     if (effectiveProxy?.username && effectiveProxy?.password) {
       await page.authenticate({
         username: effectiveProxy.username,
         password: effectiveProxy.password,
       });
+      logger.info("Proxy authentication credentials set on page");
     }
 
     // Intercept the extend-time API response to know success/failure
@@ -162,8 +191,12 @@ export async function extendServerWithBrowser(
 
     // Warm up Cloudflare cookies on homepage
     logger.info({ serverId }, "Warming up Cloudflare cookies for extend...");
-    await page.goto(BYTENUT_BASE_URL, { waitUntil: "domcontentloaded", timeout: 45000 });
-    await waitForCloudflare(page, 30000);
+    await page.goto(BYTENUT_BASE_URL, {
+      waitUntil: "domcontentloaded",
+      timeout: 60000,
+    });
+    await waitForCloudflare(page, 45000);
+    await sleep(2000);
 
     // Inject cached yl-token so the page loads as authenticated
     await page.evaluate((token: string) => {
@@ -174,17 +207,23 @@ export async function extendServerWithBrowser(
     logger.info({ serverId }, "Navigating to free-gamepanel page...");
     await page.goto(`${BYTENUT_BASE_URL}/free-gamepanel/${serverId}`, {
       waitUntil: "domcontentloaded",
-      timeout: 45000,
+      timeout: 60000,
     });
-    await waitForCloudflare(page, 30000);
-    await sleep(4000); // Let the Vue app fully render
+    await waitForCloudflare(page, 45000);
+    await sleep(5000); // Let the Vue app fully render
 
     // Dump page buttons for diagnostics
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pageButtons: string[] = await page.evaluate((): string[] =>
-      Array.from((document as any).querySelectorAll("button, [class*='button'], [role='button']")).map(
+      Array.from(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (el: any) => `class="${el.className}" text="${el.textContent?.trim().slice(0, 60)}"`,
+        (document as any).querySelectorAll(
+          "button, [class*='button'], [role='button'], [class*='cta']",
+        ),
+      ).map(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (el: any) =>
+          `class="${el.className}" text="${el.textContent?.trim().slice(0, 80)}"`,
       ),
     );
     logger.info({ pageButtons }, "Buttons on free-gamepanel page");
@@ -194,12 +233,18 @@ export async function extendServerWithBrowser(
       ".free-server-cta",
       "[class*='free-server-cta']",
       "[class*='free-server-button']",
+      "[class*='extend']",
+      "[class*='cta']",
     ];
 
     let clicked = false;
     for (const sel of EXTEND_SELECTORS) {
       const handle = await page.$(sel).catch(() => null);
       if (handle) {
+        const text: string = await handle
+          .evaluate((el: Element) => el.textContent?.trim() ?? "")
+          .catch(() => "");
+        logger.info({ selector: sel, text }, "Found candidate extend button");
         await handle.click();
         clicked = true;
         logger.info({ selector: sel, serverId }, "Clicked extend button via selector");
@@ -208,38 +253,56 @@ export async function extendServerWithBrowser(
     }
 
     if (!clicked) {
-      // Fallback: find by text containing "+" and "min"
+      // Fallback: find by text containing "+" and "min" or "extend"
       clicked = await page.evaluate((): boolean => {
         const all = Array.from(
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (document as any).querySelectorAll("button, [class*='button'], [role='button']"),
+          (document as any).querySelectorAll(
+            "button, [class*='button'], [role='button'], [class*='cta']",
+          ),
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
         ) as any[];
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const btn = all.find((el: any) => {
           const text = (el.textContent ?? "").trim().toLowerCase();
-          return (text.includes("+") && text.includes("min")) || text.includes("extend");
+          return (
+            (text.includes("+") && text.includes("min")) ||
+            text.includes("extend") ||
+            text.includes("+60")
+          );
         });
-        if (btn) { btn.click(); return true; }
+        if (btn) {
+          btn.click();
+          return true;
+        }
         return false;
       });
       if (clicked) logger.info({ serverId }, "Clicked extend button via text content");
     }
 
     if (!clicked) {
-      throw new Error("Could not find the extend button on the free-gamepanel page");
+      throw new Error(
+        "Could not find the extend (+60 min) button on the free-gamepanel page",
+      );
     }
 
-    // Wait for Turnstile to be solved and extend-time request to complete (up to 35s)
-    logger.info({ serverId }, "Waiting for Turnstile solve and extend-time response...");
-    const deadline = Date.now() + 35000;
+    // Wait for Turnstile to be solved and extend-time request to complete (up to 50s)
+    logger.info(
+      { serverId },
+      "Waiting for Turnstile solve and extend-time response...",
+    );
+    const deadline = Date.now() + 50000;
     while (Date.now() < deadline && extendResult === null) {
       await sleep(500);
     }
 
     if (extendResult !== null) {
       if (extendResult.code === 200) {
-        return { success: true, message: "Server extended successfully", data: extendResult };
+        return {
+          success: true,
+          message: "Server extended successfully",
+          data: extendResult,
+        };
       }
       return {
         success: false,
@@ -249,7 +312,10 @@ export async function extendServerWithBrowser(
     }
 
     // No response intercepted in time — treat button click as best-effort
-    return { success: true, message: "Extend button clicked (no response intercepted)" };
+    return {
+      success: true,
+      message: "Extend button clicked (no API response intercepted within timeout)",
+    };
   } catch (err) {
     logger.error({ err, serverId }, "Browser extend failed");
     throw err;
@@ -275,16 +341,21 @@ export async function loginWithBrowser(
 
     const effectiveProxy = proxy ?? getProxyFromEnv();
     const proxyArgs = buildProxyArgs(effectiveProxy);
+    const connectProxy = buildConnectProxy(effectiveProxy);
 
     if (effectiveProxy) {
       logger.info(
-        { host: effectiveProxy.host, port: effectiveProxy.port, hasAuth: !!(effectiveProxy.username && effectiveProxy.password) },
-        "Using proxy for browser session",
+        {
+          host: effectiveProxy.host,
+          port: effectiveProxy.port,
+          hasAuth: !!(effectiveProxy.username && effectiveProxy.password),
+        },
+        "Using proxy for browser session (login)",
       );
     } else {
       logger.warn(
-        "No proxy configured — Cloudflare may block this datacenter IP. " +
-          "Set PROXY_HOST and PROXY_PORT env vars to use a residential proxy.",
+        "No proxy configured — Cloudflare WILL block this datacenter IP. " +
+          "Set PROXY_HOST / PROXY_PORT / PROXY_USERNAME / PROXY_PASSWORD env vars.",
       );
     }
 
@@ -293,17 +364,9 @@ export async function loginWithBrowser(
     const result = await connect({
       headless: false,
       turnstile: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--window-size=1280,800",
-        ...proxyArgs,
-      ],
-      proxy: effectiveProxy
-        ? { host: effectiveProxy.host, port: effectiveProxy.port }
-        : {},
+      fingerprint: true,
+      args: [...STEALTH_ARGS, ...proxyArgs],
+      proxy: connectProxy,
       customConfig: {},
       connectOption: {},
     });
@@ -313,37 +376,38 @@ export async function loginWithBrowser(
 
     await page.setViewport({ width: 1280, height: 800 });
 
-    // Also set page-level auth as a fallback for proxy providers that use 407
+    // Set proxy auth BEFORE any navigation — handles HTTP 407 proxy auth challenge
     if (effectiveProxy?.username && effectiveProxy?.password) {
       await page.authenticate({
         username: effectiveProxy.username,
         password: effectiveProxy.password,
       });
+      logger.info("Proxy authentication credentials set on page");
     }
 
     // Step 1: Hit the homepage first to collect Cloudflare clearance cookie
     logger.info("Visiting homepage to warm up Cloudflare cookies...");
     await page.goto(BYTENUT_BASE_URL, {
       waitUntil: "domcontentloaded",
-      timeout: 45000,
+      timeout: 60000,
     });
-    await waitForCloudflare(page, 30000);
+    await waitForCloudflare(page, 45000);
     await sleep(2000);
 
     // Step 2: Navigate to the login page
     logger.info("Navigating to login page...");
     await page.goto(`${BYTENUT_BASE_URL}/login`, {
       waitUntil: "domcontentloaded",
-      timeout: 45000,
+      timeout: 60000,
     });
-    await waitForCloudflare(page, 30000);
+    await waitForCloudflare(page, 45000);
     await sleep(2000);
 
     const pageUrl: string = page.url();
     const pageTitle: string = await page.title().catch(() => "(navigated away)");
     logger.info({ pageUrl, pageTitle }, "Login page loaded");
 
-    // Dump all inputs for debugging (runs in browser context — DOM types intentional)
+    // Dump all inputs for debugging
     const inputsFound: string[] = await page.evaluate((): string[] => {
       return Array.from((document as any).querySelectorAll("input")).map(
         (el: any) =>
@@ -355,7 +419,9 @@ export async function loginWithBrowser(
     if (inputsFound.length === 0) {
       logger.info("No inputs found — scanning for a login trigger...");
       const clicked: boolean = await page.evaluate((): boolean => {
-        const all = Array.from((document as any).querySelectorAll("a, button, [role='button']")) as any[];
+        const all = Array.from(
+          (document as any).querySelectorAll("a, button, [role='button']"),
+        ) as any[];
         const trigger = all.find((el: any) => {
           const text = (el.textContent ?? "").toLowerCase();
           return (
@@ -431,7 +497,9 @@ export async function loginWithBrowser(
         explicit.click();
         return true;
       }
-      const btns = Array.from((document as any).querySelectorAll("button")) as any[];
+      const btns = Array.from(
+        (document as any).querySelectorAll("button"),
+      ) as any[];
       const loginBtn = btns.find((b: any) => {
         const t = (b.textContent ?? "").toLowerCase();
         return (
@@ -468,8 +536,7 @@ export async function loginWithBrowser(
 
     const ylToken: string | null = await page.evaluate(() => {
       const exact =
-        localStorage.getItem("yl-token") ??
-        sessionStorage.getItem("yl-token");
+        localStorage.getItem("yl-token") ?? sessionStorage.getItem("yl-token");
       if (exact) return exact;
 
       for (const store of [localStorage, sessionStorage]) {
@@ -520,16 +587,12 @@ export async function loginWithBrowser(
     if (page) {
       try {
         await page.close();
-      } catch {
-        // ignore
-      }
+      } catch { /* ignore */ }
     }
     if (browser) {
       try {
         await browser.close();
-      } catch {
-        // ignore
-      }
+      } catch { /* ignore */ }
     }
   }
 }
