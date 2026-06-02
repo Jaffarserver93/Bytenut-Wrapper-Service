@@ -14,7 +14,7 @@ function buildClient(): AxiosInstance {
     ...(hasProxy
       ? {
           proxy: {
-            protocol: "https",
+            protocol: "http",
             host,
             port,
             ...(username && password
