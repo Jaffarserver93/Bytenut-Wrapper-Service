@@ -5,6 +5,7 @@ import {
   setCachedToken,
   invalidateCachedToken,
 } from "../../services/tokenCache.js";
+import { httpClient } from "../../lib/httpClient.js";
 
 const router: IRouter = Router();
 
@@ -14,15 +15,14 @@ async function fetchWithToken(
   token: string,
   path: string,
 ): Promise<{ status: number; body: unknown }> {
-  const res = await fetch(`${BYTENUT_BASE_URL}${path}`, {
-    method: "GET",
+  const res = await httpClient.get(`${BYTENUT_BASE_URL}${path}`, {
     headers: {
       Accept: "application/json, text/plain, */*",
       "yl-token": token,
     },
+    validateStatus: () => true,
   });
-  const body = await res.json().catch(() => null);
-  return { status: res.status, body };
+  return { status: res.status, body: res.data };
 }
 
 router.post("/profile", async (req: Request, res: Response) => {
@@ -36,12 +36,13 @@ router.post("/profile", async (req: Request, res: Response) => {
     return;
   }
 
+  const proxy = getProxyFromEnv();
+
   const getOrFreshToken = async (): Promise<string> => {
     const cached = getCachedToken(username);
     if (cached) return cached;
 
     req.log.info({ username }, "No cached token — running browser auth");
-    const proxy = getProxyFromEnv();
     const fresh = await loginWithBrowser(username, password, proxy);
     setCachedToken(username, fresh);
     return fresh;
