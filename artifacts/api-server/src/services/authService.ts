@@ -39,7 +39,7 @@ async function waitForCloudflare(
   const deadline = Date.now() + maxWaitMs;
 
   while (Date.now() < deadline) {
-    const title: string = await page.title();
+    const title: string = await page.title().catch(() => "");
     if (
       title.includes("Attention Required") ||
       title.includes("Just a moment") ||
@@ -60,7 +60,7 @@ async function waitForCloudflare(
     }
   }
 
-  const finalTitle: string = await page.title();
+  const finalTitle: string = await page.title().catch(() => "(navigated away)");
   logger.warn(
     { finalTitle },
     "Cloudflare challenge did not clear within timeout — continuing anyway",
@@ -146,7 +146,7 @@ export async function loginWithBrowser(
     await sleep(2000);
 
     const pageUrl: string = page.url();
-    const pageTitle: string = await page.title();
+    const pageTitle: string = await page.title().catch(() => "(navigated away)");
     logger.info({ pageUrl, pageTitle }, "Login page loaded");
 
     // Dump all inputs for debugging (runs in browser context — DOM types intentional)
@@ -269,7 +269,7 @@ export async function loginWithBrowser(
     await sleep(3000);
 
     const finalUrl: string = page.url();
-    const finalTitle: string = await page.title();
+    const finalTitle: string = await page.title().catch(() => "(navigated away)");
     logger.info({ finalUrl, finalTitle }, "Post-login page");
 
     const ylToken: string | null = await page.evaluate(() => {

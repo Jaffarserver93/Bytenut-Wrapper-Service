@@ -25,6 +25,64 @@ async function fetchWithToken(
   return { status: res.status, body: res.data };
 }
 
+router.post("/servers", async (req: Request, res: Response) => {
+  const { username, password } = req.body as {
+    username?: string;
+    password?: string;
+  };
+
+  if (!username || !password) {
+    res.status(400).json({ error: "username and password are required" });
+    return;
+  }
+
+  const proxy = getProxyFromEnv();
+
+  const getOrFreshToken = async (): Promise<string> => {
+    const cached = getCachedToken(username);
+    if (cached) return cached;
+
+    req.log.info({ username }, "No cached token — running browser auth");
+    const fresh = await loginWithBrowser(username, password, proxy);
+    setCachedToken(username, fresh);
+    return fresh;
+  };
+
+  try {
+    let token = await getOrFreshToken();
+
+    let { status, body } = await fetchWithToken(
+      token,
+      "/game-panel/api/gpPanelServer/user/servers",
+    );
+
+    if (status === 401) {
+      req.log.warn({ username }, "Got 401 — invalidating cached token and retrying");
+      invalidateCachedToken(username);
+      token = await getOrFreshToken();
+      ({ status, body } = await fetchWithToken(
+        token,
+        "/game-panel/api/gpPanelServer/user/servers",
+      ));
+    }
+
+    if (status >= 400) {
+      res.status(status).json({
+        error: "Upstream request failed",
+        upstreamStatus: status,
+        detail: body,
+      });
+      return;
+    }
+
+    res.json({ servers: body });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    req.log.error({ username, err }, "Servers fetch failed");
+    res.status(500).json({ error: "Failed to fetch servers", detail: message });
+  }
+});
+
 router.post("/profile", async (req: Request, res: Response) => {
   const { username, password } = req.body as {
     username?: string;
