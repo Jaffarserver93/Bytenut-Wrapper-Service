@@ -6,6 +6,10 @@ import {
   invalidateCachedToken,
 } from "../../services/tokenCache.js";
 import { httpClient } from "../../lib/httpClient.js";
+import {
+  setAutoExtendConfig,
+  getAutoExtendConfig,
+} from "../../services/autoExtendService.js";
 
 const router: IRouter = Router();
 
@@ -228,6 +232,41 @@ router.post("/extend/:serverId", async (req: Request, res: Response) => {
     req.log.error({ username, serverId, err }, "Extend server failed");
     res.status(500).json({ error: "Failed to extend server", detail: message });
   }
+});
+
+router.post("/auto-extend/:serverId", async (req: Request, res: Response) => {
+  const { username, password, enabled, thresholdMinutes } = req.body as {
+    username?: string;
+    password?: string;
+    enabled?: boolean;
+    thresholdMinutes?: number;
+  };
+  const { serverId } = req.params;
+
+  if (!username || !password) {
+    res.status(400).json({ error: "username and password are required" });
+    return;
+  }
+
+  if (enabled !== undefined) {
+    const threshold = Number(thresholdMinutes ?? 10);
+    const config = setAutoExtendConfig(username, password, serverId, !!enabled, threshold);
+    res.json({ autoExtend: config });
+    return;
+  }
+
+  const config = getAutoExtendConfig(username, serverId);
+  res.json({
+    autoExtend: config ?? {
+      username,
+      serverId,
+      enabled: false,
+      thresholdMinutes: 10,
+      lastExtendedAt: null,
+      lastError: null,
+      status: "disabled",
+    },
+  });
 });
 
 export default router;

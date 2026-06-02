@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getProfile, getServers, login, getExtensionInfo, extendServer } from "@/lib/api";
+import { getProfile, getServers, login, getExtensionInfo, extendServer, getAutoExtendConfig, setAutoExtendConfig } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 
 export function useLogin() {
@@ -58,6 +58,31 @@ export function useExtendServer(serverId: string) {
     mutationFn: () => extendServer(creds!.username, creds!.password, serverId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["extensionInfo", creds?.username, serverId] });
+    },
+  });
+}
+
+export function useAutoExtendConfig(serverId: string) {
+  const { creds, isAuthenticated } = useAuth();
+
+  return useQuery({
+    queryKey: ["autoExtend", creds?.username, serverId],
+    queryFn: () => getAutoExtendConfig(creds!.username, creds!.password, serverId),
+    enabled: isAuthenticated && !!creds && !!serverId,
+    staleTime: 1000 * 30,
+    refetchInterval: 1000 * 30,
+  });
+}
+
+export function useSetAutoExtendConfig(serverId: string) {
+  const { creds } = useAuth();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ enabled, thresholdMinutes }: { enabled: boolean; thresholdMinutes: number }) =>
+      setAutoExtendConfig(creds!.username, creds!.password, serverId, enabled, thresholdMinutes),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["autoExtend", creds?.username, serverId] });
     },
   });
 }
