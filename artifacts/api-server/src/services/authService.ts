@@ -12,6 +12,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 export interface ProxyConfig {
+  protocol: string;
   host: string;
   port: number;
   username?: string;
@@ -23,11 +24,33 @@ export function getProxyFromEnv(): ProxyConfig | null {
   const port = Number(process.env["PROXY_PORT"]);
   if (!host || !port) return null;
   return {
+    protocol: process.env["PROXY_PROTOCOL"] ?? "https",
     host,
     port,
     username: process.env["PROXY_USERNAME"],
     password: process.env["PROXY_PASSWORD"],
   };
+}
+
+/**
+ * Build the --proxy-server Chrome arg and the proxy object for puppeteer-real-browser.
+ * Credentials are embedded in the URL so Chrome uses them for CONNECT tunnel auth.
+ */
+function buildProxyArgs(proxy: ProxyConfig | null): string[] {
+  if (!proxy) return [];
+  const { protocol, host, port, username, password } = proxy;
+  let proxyUrl: string;
+  if (username && password) {
+    const encodedUser = encodeURIComponent(username);
+    const encodedPass = encodeURIComponent(password);
+    proxyUrl = `${protocol}://${encodedUser}:${encodedPass}@${host}:${port}`;
+  } else {
+    proxyUrl = `${protocol}://${host}:${port}`;
+  }
+  return [
+    `--proxy-server=${proxyUrl}`,
+    "--ignore-certificate-errors",
+  ];
 }
 
 async function waitForCloudflare(
@@ -75,6 +98,16 @@ export async function extendServerWithBrowser(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { connect } = _require("puppeteer-real-browser") as any;
   const effectiveProxy = proxy ?? getProxyFromEnv();
+  const proxyArgs = buildProxyArgs(effectiveProxy);
+
+  if (effectiveProxy) {
+    logger.info(
+      { host: effectiveProxy.host, port: effectiveProxy.port, hasAuth: !!(effectiveProxy.username && effectiveProxy.password) },
+      "Using proxy for browser session (extend)",
+    );
+  } else {
+    logger.warn("No proxy configured for extend — Cloudflare may block this datacenter IP.");
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let browser: any = null;
@@ -91,6 +124,7 @@ export async function extendServerWithBrowser(
         "--disable-dev-shm-usage",
         "--disable-gpu",
         "--window-size=1280,800",
+        ...proxyArgs,
       ],
       proxy: effectiveProxy
         ? { host: effectiveProxy.host, port: effectiveProxy.port }
@@ -104,6 +138,7 @@ export async function extendServerWithBrowser(
 
     await page.setViewport({ width: 1280, height: 800 });
 
+    // Also set page-level auth as a fallback for proxy providers that use 407
     if (effectiveProxy?.username && effectiveProxy?.password) {
       await page.authenticate({
         username: effectiveProxy.username,
@@ -239,10 +274,11 @@ export async function loginWithBrowser(
     const { connect } = _require("puppeteer-real-browser") as any;
 
     const effectiveProxy = proxy ?? getProxyFromEnv();
+    const proxyArgs = buildProxyArgs(effectiveProxy);
 
     if (effectiveProxy) {
       logger.info(
-        { host: effectiveProxy.host, port: effectiveProxy.port },
+        { host: effectiveProxy.host, port: effectiveProxy.port, hasAuth: !!(effectiveProxy.username && effectiveProxy.password) },
         "Using proxy for browser session",
       );
     } else {
@@ -263,6 +299,7 @@ export async function loginWithBrowser(
         "--disable-dev-shm-usage",
         "--disable-gpu",
         "--window-size=1280,800",
+        ...proxyArgs,
       ],
       proxy: effectiveProxy
         ? { host: effectiveProxy.host, port: effectiveProxy.port }
@@ -276,7 +313,7 @@ export async function loginWithBrowser(
 
     await page.setViewport({ width: 1280, height: 800 });
 
-    // If proxy requires auth, set it up
+    // Also set page-level auth as a fallback for proxy providers that use 407
     if (effectiveProxy?.username && effectiveProxy?.password) {
       await page.authenticate({
         username: effectiveProxy.username,
