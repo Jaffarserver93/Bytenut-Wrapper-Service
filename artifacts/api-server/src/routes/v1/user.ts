@@ -51,13 +51,13 @@ router.post("/profile", async (req: Request, res: Response) => {
   try {
     let token = await getOrFreshToken();
 
-    let { status, body } = await fetchWithToken(token, "/common/user/current");
+    let { status, body } = await fetchWithToken(token, "/userInfo/basic");
 
     if (status === 401) {
       req.log.warn({ username }, "Got 401 — invalidating cached token and retrying");
       invalidateCachedToken(username);
       token = await getOrFreshToken();
-      ({ status, body } = await fetchWithToken(token, "/common/user/current"));
+      ({ status, body } = await fetchWithToken(token, "/userInfo/basic"));
     }
 
     if (status >= 400) {
