@@ -185,6 +185,36 @@ POST /api/v1/user/profile
 
 ---
 
+## Proxy Configuration (Required on Cloud / Datacenter Hosts)
+
+Bytenut.com uses Cloudflare WAF which blocks known datacenter IP ranges (AWS, GCP, Replit, etc.) with an **"Attention Required!"** challenge page that cannot be bypassed by browser fingerprinting alone.
+
+To work around this, set a **residential proxy** before starting the server:
+
+```bash
+export PROXY_HOST=your.proxy.host
+export PROXY_PORT=1080           # or whatever port your proxy uses
+export PROXY_USERNAME=user       # optional, if your proxy requires auth
+export PROXY_PASSWORD=pass       # optional
+```
+
+Or add them as Replit secrets/env vars (`PROXY_HOST`, `PROXY_PORT`, `PROXY_USERNAME`, `PROXY_PASSWORD`).
+
+The proxy is used **only for the Chromium browser session** (the initial Cloudflare bypass). Subsequent `fetch()` calls for cached-token requests go direct.
+
+### Recommended residential proxy providers
+
+| Provider | Type | Notes |
+|---|---|---|
+| [Bright Data](https://brightdata.com) | Residential | Most reliable for Cloudflare bypass |
+| [Smartproxy](https://smartproxy.com) | Residential | Good coverage |
+| [Oxylabs](https://oxylabs.io) | Residential | Enterprise-grade |
+| [IPRoyal](https://iproyal.com) | Residential | Budget option |
+
+If you have access to a server on a **residential ISP** (not a datacenter), you can run the API wrapper there without any proxy.
+
+---
+
 ## Notes & Troubleshooting
 
 - **Selector failures** — If Bytenut updates their login page DOM, the username/password/submit selectors in `src/services/authService.ts` may need updating. The service tries multiple common selector patterns and falls back to pressing `Enter`.

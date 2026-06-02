@@ -1,5 +1,5 @@
 import { Router, type IRouter, type Request, type Response } from "express";
-import { loginWithBrowser } from "../../services/authService.js";
+import { loginWithBrowser, getProxyFromEnv } from "../../services/authService.js";
 import {
   getCachedToken,
   setCachedToken,
@@ -29,7 +29,7 @@ router.post("/login", async (req: Request, res: Response) => {
 
   try {
     req.log.info({ username }, "No cached token — starting browser auth");
-    const ylToken = await loginWithBrowser(username, password);
+    const ylToken = await loginWithBrowser(username, password, getProxyFromEnv());
     setCachedToken(username, ylToken);
     res.json({ ylToken, cached: false });
   } catch (err) {

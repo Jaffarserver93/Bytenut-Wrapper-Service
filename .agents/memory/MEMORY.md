@@ -1,0 +1,1 @@
+- [Cloudflare WAF blocks datacenter IPs](cloudflare-datacenter-block.md) — Bytenut.com blocks Replit/cloud IPs at WAF level; residential proxy required for browser auth to work.
