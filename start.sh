@@ -47,9 +47,9 @@ else
 fi
 
 # ── 2. Install workspace deps ───────────────────────────────────────────────
-info "Installing workspace dependencies..."
+info "Installing workspace dependencies (this may take a few minutes)..."
 cd "$WORKSPACE_DIR"
-pnpm install --frozen-lockfile 2>&1 | tail -5
+pnpm install --no-frozen-lockfile
 ok "Dependencies ready"
 
 # ── 3. Build the API server ─────────────────────────────────────────────────
