@@ -24,7 +24,7 @@ check_or_install() {
 }
 
 check_or_install tmux
-check_or_install node  nodejs
+check_or_install node nodejs
 check_or_install npm
 
 # pnpm
@@ -37,9 +37,7 @@ else
 fi
 
 # Xvfb (optional — needed for puppeteer-real-browser)
-HAVE_XVFB=false
 if command -v Xvfb &>/dev/null; then
-  HAVE_XVFB=true
   ok "Xvfb found"
 else
   warn "Xvfb not found — API server will start without virtual display (puppeteer may not work)."
@@ -52,12 +50,9 @@ cd "$WORKSPACE_DIR"
 pnpm install --no-frozen-lockfile
 ok "Dependencies ready"
 
-# ── 3. Build the API server ─────────────────────────────────────────────────
-info "Building API server..."
-cd "$WORKSPACE_DIR/artifacts/api-server"
-node ./build.mjs
-ok "API server built"
-cd "$WORKSPACE_DIR"
+# ── 3. Make runner scripts executable ──────────────────────────────────────
+chmod +x "$WORKSPACE_DIR/run-api.sh"
+chmod +x "$WORKSPACE_DIR/run-dashboard.sh"
 
 # ── 4. Kill any existing session ───────────────────────────────────────────
 if tmux has-session -t "$SESSION" 2>/dev/null; then
@@ -69,25 +64,24 @@ fi
 info "Starting tmux session '$SESSION'..."
 
 # Window 0 — API Server
-# NOTE: Xvfb must be wrapped in (...) so only it is backgrounded;
-#       without it the `cd` also gets backgrounded and node runs from the wrong dir.
-API_CMD="cd $WORKSPACE_DIR/artifacts/api-server"
-if [ "$HAVE_XVFB" = true ]; then
-  API_CMD="$API_CMD && (Xvfb :99 -screen 0 1280x800x24 >/dev/null 2>&1 &) && export DISPLAY=:99"
-fi
-API_CMD="$API_CMD && export NODE_ENV=development && export PORT=8080 && node --enable-source-maps $WORKSPACE_DIR/artifacts/api-server/dist/index.mjs"
-
-tmux new-session  -d -s "$SESSION" -n "api"       -x 220 -y 50
-tmux send-keys    -t "$SESSION:api"       "$API_CMD" Enter
+# The trailing `; echo ... ; read` keeps the window open if the process exits,
+# so you can see any error messages instead of the window just closing.
+tmux new-session -d -s "$SESSION" -n "api" -x 220 -y 50
+tmux send-keys  -t "$SESSION:api" \
+  "bash $WORKSPACE_DIR/run-api.sh; echo ''; echo '--- API server exited (check errors above) ---'; read" \
+  Enter
 
 # Window 1 — Dashboard
-DASH_CMD="cd $WORKSPACE_DIR/artifacts/dashboard && export PORT=5173 && npx --yes vite --config vite.config.ts --host 0.0.0.0 --port 5173"
-tmux new-window   -t "$SESSION" -n "dashboard"
-tmux send-keys    -t "$SESSION:dashboard" "$DASH_CMD" Enter
+tmux new-window -t "$SESSION" -n "dashboard"
+tmux send-keys  -t "$SESSION:dashboard" \
+  "bash $WORKSPACE_DIR/run-dashboard.sh; echo ''; echo '--- Dashboard exited (check errors above) ---'; read" \
+  Enter
 
 # Window 2 — Shell (free to use)
-tmux new-window   -t "$SESSION" -n "shell"
-tmux send-keys    -t "$SESSION:shell"     "cd $WORKSPACE_DIR && echo 'Bytenut workspace ready'" Enter
+tmux new-window -t "$SESSION" -n "shell"
+tmux send-keys  -t "$SESSION:shell" \
+  "cd $WORKSPACE_DIR && echo 'Bytenut workspace — shell ready'" \
+  Enter
 
 # Focus the api window
 tmux select-window -t "$SESSION:api"
