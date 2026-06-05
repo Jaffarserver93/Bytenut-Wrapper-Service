@@ -23,6 +23,20 @@ export BASE_PATH=/
 export NODE_ENV=development
 echo "[dashboard] PORT=$PORT  BASE_PATH=$BASE_PATH"
 
+# ── ARM64: install missing rollup native binary (one-time fix) ────────────
+if [ "$(uname -m)" = "aarch64" ]; then
+  node -e "require('@rollup/rollup-linux-arm64-gnu')" 2>/dev/null || {
+    echo "[dashboard] ARM64: rollup native binary missing — installing now..."
+    cd "$WORKSPACE_DIR"
+    pnpm store prune 2>/dev/null || true
+    npm_config_optional=true pnpm add --save-optional \
+      @rollup/rollup-linux-arm64-gnu@4.60.3 2>/dev/null \
+      || npm install --save-optional @rollup/rollup-linux-arm64-gnu@4.60.3 2>/dev/null \
+      || echo "[dashboard] WARNING: could not install ARM64 rollup — vite may fail"
+    echo "[dashboard] ARM64 rollup install done"
+  }
+fi
+
 # ── Find vite ────────────────────────────────────────────────────────────
 VITE_BIN=""
 for candidate in \
