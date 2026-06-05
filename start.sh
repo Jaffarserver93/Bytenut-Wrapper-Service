@@ -69,11 +69,13 @@ fi
 info "Starting tmux session '$SESSION'..."
 
 # Window 0 — API Server
+# NOTE: Xvfb must be wrapped in (...) so only it is backgrounded;
+#       without it the `cd` also gets backgrounded and node runs from the wrong dir.
 API_CMD="cd $WORKSPACE_DIR/artifacts/api-server"
 if [ "$HAVE_XVFB" = true ]; then
-  API_CMD="$API_CMD && Xvfb :99 -screen 0 1280x800x24 &>/dev/null & export DISPLAY=:99"
+  API_CMD="$API_CMD && (Xvfb :99 -screen 0 1280x800x24 >/dev/null 2>&1 &) && export DISPLAY=:99"
 fi
-API_CMD="$API_CMD && export NODE_ENV=development && export PORT=8080 && node --enable-source-maps ./dist/index.mjs"
+API_CMD="$API_CMD && export NODE_ENV=development && export PORT=8080 && node --enable-source-maps $WORKSPACE_DIR/artifacts/api-server/dist/index.mjs"
 
 tmux new-session  -d -s "$SESSION" -n "api"       -x 220 -y 50
 tmux send-keys    -t "$SESSION:api"       "$API_CMD" Enter
