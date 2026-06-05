@@ -4,14 +4,13 @@ set -e
 SESSION="bytenut"
 WORKSPACE_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# ── Colours ────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 info()  { echo -e "${CYAN}[*]${NC} $*"; }
 ok()    { echo -e "${GREEN}[✓]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[!]${NC} $*"; }
 die()   { echo -e "${RED}[✗]${NC} $*"; exit 1; }
 
-# ── 1. Dependency checks / auto-install ───────────────────────────────────
+# ── 1. Dependency checks ───────────────────────────────────────────────────
 check_or_install() {
   local cmd="$1" pkg="${2:-$1}"
   if ! command -v "$cmd" &>/dev/null; then
@@ -35,80 +34,70 @@ else
   ok "pnpm found: $(command -v pnpm)"
 fi
 
-if command -v Xvfb &>/dev/null; then
-  ok "Xvfb found"
-else
-  warn "Xvfb not found — puppeteer may not work (apt install xvfb to fix)"
-fi
+command -v Xvfb &>/dev/null && ok "Xvfb found" || warn "Xvfb not found (apt install xvfb to fix puppeteer)"
 
-# ── 2. Check .env / database ───────────────────────────────────────────────
+# ── 2. Check .env ─────────────────────────────────────────────────────────
 ENV_FILE="$WORKSPACE_DIR/.env"
-if [ ! -f "$ENV_FILE" ]; then
-  die ".env not found. Create it first:\n\n  echo 'DATABASE_URL=<your-postgres-url>' > $WORKSPACE_DIR/.env\n\nOr run: bash setup-db.sh  (sets up a local PostgreSQL database)"
-fi
+[ ! -f "$ENV_FILE" ] && die ".env not found.\n  Create it: echo 'DATABASE_URL=<url>' > $ENV_FILE\n  Or run:    bash setup-db.sh"
 
-# Load .env to validate DATABASE_URL
-set -a; source "$ENV_FILE"; set +a
-if [ -z "$DATABASE_URL" ]; then
-  die "DATABASE_URL is not set in .env — add it and re-run"
-fi
+# Safe load — avoids issues with special chars in DATABASE_URL
+while IFS='=' read -r key val; do
+  [[ "$key" =~ ^#.*$ || -z "$key" ]] && continue
+  export "$key"="$val"
+done < <(grep -v '^\s*#' "$ENV_FILE" | grep '=')
+
+[ -z "$DATABASE_URL" ] && die "DATABASE_URL not set in .env"
 ok "DATABASE_URL found in .env"
 
 # ── 3. Install workspace deps ──────────────────────────────────────────────
-info "Installing workspace dependencies (this may take a few minutes)..."
+info "Installing workspace dependencies..."
 cd "$WORKSPACE_DIR"
 pnpm install --no-frozen-lockfile
 ok "Dependencies ready"
 
-# ── 4. Make scripts executable ─────────────────────────────────────────────
-chmod +x "$WORKSPACE_DIR/run-api.sh"
-chmod +x "$WORKSPACE_DIR/run-dashboard.sh"
-chmod +x "$WORKSPACE_DIR/setup-db.sh"
+chmod +x "$WORKSPACE_DIR/run-api.sh" "$WORKSPACE_DIR/run-dashboard.sh" "$WORKSPACE_DIR/setup-db.sh" 2>/dev/null || true
 
-# ── 5. Kill any existing session ──────────────────────────────────────────
+# ── 4. Kill any existing tmux session ─────────────────────────────────────
 if tmux has-session -t "$SESSION" 2>/dev/null; then
   warn "Killing existing tmux session '$SESSION'..."
   tmux kill-session -t "$SESSION"
 fi
 
-# ── 6. Launch tmux session ────────────────────────────────────────────────
+# ── 5. Launch tmux session ────────────────────────────────────────────────
 info "Starting tmux session '$SESSION'..."
 
-# Window 0 — API Server
+# Create session — first window is the API
 tmux new-session -d -s "$SESSION" -n "api" -x 220 -y 50
-tmux send-keys  -t "$SESSION:api" \
-  "bash $WORKSPACE_DIR/run-api.sh; echo ''; echo '--- API exited (read error above, press Enter) ---'; read" \
-  Enter
+
+# Critical: keep windows open after process exits so errors are always visible
+tmux set-option -t "$SESSION" remain-on-exit on
+
+# Window 0 — API Server
+tmux send-keys -t "$SESSION:api" "bash $WORKSPACE_DIR/run-api.sh" Enter
 
 # Window 1 — Dashboard
-tmux new-window -t "$SESSION" -n "dashboard"
-tmux send-keys  -t "$SESSION:dashboard" \
-  "bash $WORKSPACE_DIR/run-dashboard.sh; echo ''; echo '--- Dashboard exited (read error above, press Enter) ---'; read" \
-  Enter
+tmux new-window  -t "$SESSION" -n "dashboard"
+tmux send-keys -t "$SESSION:dashboard" "bash $WORKSPACE_DIR/run-dashboard.sh" Enter
 
-# Window 2 — Shell
-tmux new-window -t "$SESSION" -n "shell"
-tmux send-keys  -t "$SESSION:shell" \
-  "cd $WORKSPACE_DIR && echo 'Bytenut workspace — shell ready'" \
-  Enter
+# Window 2 — Shell (persistent interactive shell)
+tmux new-window  -t "$SESSION" -n "shell"
+tmux send-keys -t "$SESSION:shell" "cd $WORKSPACE_DIR && echo '--- Bytenut shell ready ---'" Enter
 
+# Focus API window
 tmux select-window -t "$SESSION:api"
 
-# ── 7. Done ───────────────────────────────────────────────────────────────
+# ── 6. Done ───────────────────────────────────────────────────────────────
 echo ""
-ok "All services launched inside tmux session '${SESSION}'"
+ok "tmux session '${SESSION}' is running"
 echo ""
-echo -e "  ${CYAN}API Server  ${NC}→ http://localhost:8080"
-echo -e "  ${CYAN}Dashboard   ${NC}→ http://localhost:5173"
+echo -e "  ${CYAN}API Server ${NC}→ http://localhost:8080"
+echo -e "  ${CYAN}Dashboard  ${NC}→ http://localhost:5173"
 echo ""
-echo -e "Useful tmux commands:"
-echo -e "  ${YELLOW}tmux attach -t ${SESSION}${NC}        — attach to the session"
-echo -e "  ${YELLOW}tmux ls${NC}                          — list sessions"
-echo -e "  ${YELLOW}Ctrl-b  n / p${NC}                   — next / prev window"
-echo -e "  ${YELLOW}Ctrl-b  d${NC}                       — detach (keep running)"
-echo -e "  ${YELLOW}tmux kill-session -t ${SESSION}${NC} — stop everything"
+echo -e "  ${YELLOW}tmux attach -t ${SESSION}${NC}  — attach (Ctrl-b n/p = switch windows, Ctrl-b d = detach)"
+echo ""
+echo -e "  Once inside tmux, if a window shows ${YELLOW}[exited]${NC}:"
+echo -e "  Press ${YELLOW}Enter${NC} to see the last output, or ${YELLOW}r${NC} to respawn the window."
 echo ""
 
-if [ -t 1 ]; then
-  tmux attach -t "$SESSION"
-fi
+# Attach so user lands inside the session
+tmux attach -t "$SESSION"

@@ -30,4 +30,4 @@ fi
 export NODE_ENV=development
 export PORT=${PORT:-8080}
 
-exec node --enable-source-maps "$API_DIR/dist/index.mjs"
+node --enable-source-maps "$API_DIR/dist/index.mjs"
