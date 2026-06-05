@@ -52,6 +52,21 @@ ok "DATABASE_URL found in .env"
 # ── 3. Install workspace deps ──────────────────────────────────────────────
 info "Installing workspace dependencies..."
 cd "$WORKSPACE_DIR"
+
+# Detect ARM64 architecture mismatch — pnpm on Replit installs x64 native
+# binaries (rollup, esbuild, etc.) which won't work on ARM64 Termux devices.
+# Wipe node_modules so pnpm re-downloads the correct ARM64 binaries.
+ARCH=$(uname -m)
+ROLLUP_X64="$WORKSPACE_DIR/node_modules/.pnpm/@rollup+rollup-linux-x64-gnu@"
+ROLLUP_ARM64_PKG="@rollup/rollup-linux-arm64-gnu"
+if [ "$ARCH" = "aarch64" ] && ls "$ROLLUP_X64"* 2>/dev/null | grep -q .; then
+  if [ ! -d "$WORKSPACE_DIR/node_modules/.pnpm/${ROLLUP_ARM64_PKG//\/+/@}@"* ] 2>/dev/null; then
+    warn "ARM64 device detected with x64 binaries — cleaning node_modules for correct arch..."
+    rm -rf "$WORKSPACE_DIR/node_modules"
+    info "Reinstalling for ARM64..."
+  fi
+fi
+
 pnpm install --no-frozen-lockfile
 ok "Dependencies ready"
 
