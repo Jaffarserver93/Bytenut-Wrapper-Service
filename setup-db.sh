@@ -26,50 +26,53 @@ else
 fi
 
 # ── Detect PostgreSQL version ──────────────────────────────────────────────
-PG_VERSION=$(pg_lsclusters -h 2>/dev/null | awk '{print $1}' | head -1)
-if [ -z "$PG_VERSION" ]; then
-  # Fallback: get version from installed binaries
-  PG_VERSION=$(ls /usr/lib/postgresql/ 2>/dev/null | sort -V | tail -1)
-fi
-[ -z "$PG_VERSION" ] && die "Cannot determine PostgreSQL version"
+PG_VERSION=$(ls /usr/lib/postgresql/ 2>/dev/null | sort -V | tail -1)
+[ -z "$PG_VERSION" ] && die "Cannot find PostgreSQL in /usr/lib/postgresql/"
 info "PostgreSQL version: $PG_VERSION"
 
-# ── Create cluster if none exists ──────────────────────────────────────────
-CLUSTER_COUNT=$(pg_lsclusters -h 2>/dev/null | grep -c "." || echo 0)
-if [ "$CLUSTER_COUNT" -eq 0 ]; then
+# ── Detect cluster (pg_lsclusters -h only prints data rows, no header) ─────
+# Suppress stderr so "No clusters exist" warning doesn't pollute output
+PG_CLUSTER_LINE=$(pg_lsclusters -h 2>/dev/null | grep -v '^\s*$' | head -1 || true)
+
+if [ -z "$PG_CLUSTER_LINE" ]; then
   info "No cluster found — creating 'main' cluster..."
-  pg_createcluster "$PG_VERSION" main --start
-  ok "Cluster created and started"
+  pg_createcluster "$PG_VERSION" main
+  ok "Cluster 'main' created"
+  PG_CLUSTER="main"
 else
-  PG_CLUSTER=$(pg_lsclusters -h 2>/dev/null | awk '{print $2}' | head -1)
-  STATUS=$(pg_lsclusters -h 2>/dev/null | awk '{print $4}' | head -1)
-  info "Cluster: $PG_VERSION/$PG_CLUSTER (status: $STATUS)"
-  if [ "$STATUS" != "online" ]; then
-    info "Starting cluster..."
-    pg_ctlcluster "$PG_VERSION" "$PG_CLUSTER" start
-  else
-    ok "Cluster already online"
-  fi
+  PG_CLUSTER=$(echo "$PG_CLUSTER_LINE" | awk '{print $2}')
+  STATUS=$(echo   "$PG_CLUSTER_LINE" | awk '{print $4}')
+  info "Found cluster: $PG_VERSION/$PG_CLUSTER (status: ${STATUS:-unknown})"
+fi
+
+# ── Start cluster ──────────────────────────────────────────────────────────
+STATUS=$(pg_lsclusters -h 2>/dev/null | grep " $PG_CLUSTER " | awk '{print $4}' || echo "")
+if [ "$STATUS" = "online" ]; then
+  ok "Cluster already online"
+else
+  info "Starting cluster $PG_VERSION/$PG_CLUSTER..."
+  pg_ctlcluster "$PG_VERSION" "$PG_CLUSTER" start
+  ok "Cluster started"
 fi
 
 # ── Wait for PostgreSQL to be ready ───────────────────────────────────────
-info "Waiting for PostgreSQL..."
+info "Waiting for PostgreSQL to accept connections..."
 for i in $(seq 1 20); do
   pg_isready -q 2>/dev/null && break
   sleep 1
   echo -n "."
 done
 echo ""
-pg_isready 2>/dev/null || die "PostgreSQL did not become ready — check: pg_lsclusters"
+pg_isready 2>/dev/null || die "PostgreSQL did not become ready — run: pg_lsclusters"
 ok "PostgreSQL is ready"
 
 # ── Set postgres password & create database ───────────────────────────────
-info "Configuring database '$DB_NAME'..."
-su - postgres -c "psql -c \"ALTER USER postgres WITH PASSWORD '$DB_PASS';\"" 2>/dev/null \
-  || warn "Could not set postgres password (may already be set)"
+info "Configuring user and database '$DB_NAME'..."
+su - postgres -c "psql -c \"ALTER USER postgres WITH PASSWORD '$DB_PASS';\"" \
+  || warn "Could not set postgres password"
 
-su - postgres -c "psql -tc \"SELECT 1 FROM pg_database WHERE datname='$DB_NAME'\" | grep -q 1 \
-  || createdb $DB_NAME" 2>/dev/null
+su - postgres -c "psql -tc \"SELECT 1 FROM pg_database WHERE datname='$DB_NAME'\" \
+  | grep -q 1 || createdb $DB_NAME"
 ok "Database '$DB_NAME' is ready"
 
 # ── Write .env ────────────────────────────────────────────────────────────
