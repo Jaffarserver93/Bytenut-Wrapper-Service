@@ -36,12 +36,14 @@ PG_CLUSTER_LINE=$(pg_lsclusters -h 2>/dev/null | grep -v '^\s*$' | head -1 || tr
 
 if [ -z "$PG_CLUSTER_LINE" ]; then
   info "No cluster found — creating 'main' cluster..."
-  # Remove any partially-created data dir from a previous failed attempt
+  # Wipe any partial directory from a previous failed attempt
   rm -rf "/var/lib/postgresql/$PG_VERSION/main" 2>/dev/null || true
-  # Ensure parent directory is owned by postgres so initdb can write to it
+  # In proot/Termux environments the postgres user must own and create
+  # its own data directory — running pg_createcluster as root causes
+  # initdb to fail with "wrong ownership" even after chown.
   mkdir -p "/var/lib/postgresql/$PG_VERSION"
-  chown -R postgres:postgres "/var/lib/postgresql/$PG_VERSION"
-  pg_createcluster "$PG_VERSION" main
+  chown postgres:postgres "/var/lib/postgresql/$PG_VERSION"
+  su - postgres -c "pg_createcluster $PG_VERSION main"
   ok "Cluster 'main' created"
   PG_CLUSTER="main"
 else
