@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 WORKSPACE_DIR="$(cd "$(dirname "$0")" && pwd)"
 DASH_DIR="$WORKSPACE_DIR/artifacts/dashboard"
+ENV_FILE="$WORKSPACE_DIR/.env"
+
+# Load .env (dashboard doesn't strictly need DB but keeps env consistent)
+if [ -f "$ENV_FILE" ]; then
+  set -a; source "$ENV_FILE"; set +a
+fi
 
 echo "[dashboard] Starting on port 5173..."
 cd "$DASH_DIR"
