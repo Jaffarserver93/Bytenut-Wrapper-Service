@@ -5,10 +5,11 @@ set -e
 WORKSPACE_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE="$WORKSPACE_DIR/.env"
 
-GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
+GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; RED='\033[0;31m'; NC='\033[0m'
 info() { echo -e "${CYAN}[db]${NC} $*"; }
 ok()   { echo -e "${GREEN}[✓]${NC} $*"; }
 warn() { echo -e "${YELLOW}[!]${NC} $*"; }
+die()  { echo -e "${RED}[✗]${NC} $*"; exit 1; }
 
 DB_NAME="bytenut"
 DB_USER="postgres"
@@ -21,72 +22,66 @@ if ! command -v psql &>/dev/null; then
   apt-get update -qq && apt-get install -y -qq postgresql postgresql-client
   ok "PostgreSQL installed"
 else
-  ok "PostgreSQL found: $(psql --version)"
+  ok "PostgreSQL found: $(psql --version | head -1)"
 fi
 
-# ── Ensure data dir is initialised ─────────────────────────────────────────
-PG_DATA=""
-for d in /var/lib/postgresql/*/main /var/lib/postgresql/data; do
-  [ -d "$d" ] && PG_DATA="$d" && break
-done
-
-if [ -z "$PG_DATA" ]; then
-  warn "Could not detect PostgreSQL data directory — trying default init"
-  PG_VERSION=$(psql --version | grep -oP '\d+' | head -1)
-  PG_DATA="/var/lib/postgresql/${PG_VERSION}/main"
-  mkdir -p "$PG_DATA"
-  chown postgres:postgres "$PG_DATA"
-  su - postgres -c "pg_lsclusters" 2>/dev/null || true
+# ── Detect PostgreSQL version ──────────────────────────────────────────────
+PG_VERSION=$(pg_lsclusters -h 2>/dev/null | awk '{print $1}' | head -1)
+if [ -z "$PG_VERSION" ]; then
+  # Fallback: get version from installed binaries
+  PG_VERSION=$(ls /usr/lib/postgresql/ 2>/dev/null | sort -V | tail -1)
 fi
+[ -z "$PG_VERSION" ] && die "Cannot determine PostgreSQL version"
+info "PostgreSQL version: $PG_VERSION"
 
-# ── Start PostgreSQL ────────────────────────────────────────────────────────
-info "Starting PostgreSQL..."
-
-# Try pg_ctlcluster first (Debian/Ubuntu default), fall back to pg_ctl
-if command -v pg_ctlcluster &>/dev/null; then
-  PG_VERSION=$(pg_lsclusters -h | awk '{print $1}' | head -1)
-  PG_CLUSTER=$(pg_lsclusters -h | awk '{print $2}' | head -1)
-  STATUS=$(pg_lsclusters -h | awk '{print $4}' | head -1)
-  if [ "$STATUS" != "online" ]; then
-    pg_ctlcluster "$PG_VERSION" "$PG_CLUSTER" start || warn "pg_ctlcluster failed — trying service"
-    service postgresql start 2>/dev/null || true
-  else
-    ok "PostgreSQL already running"
-  fi
+# ── Create cluster if none exists ──────────────────────────────────────────
+CLUSTER_COUNT=$(pg_lsclusters -h 2>/dev/null | grep -c "." || echo 0)
+if [ "$CLUSTER_COUNT" -eq 0 ]; then
+  info "No cluster found — creating 'main' cluster..."
+  pg_createcluster "$PG_VERSION" main --start
+  ok "Cluster created and started"
 else
-  service postgresql start 2>/dev/null || pg_ctl start -D "$PG_DATA" 2>/dev/null || warn "Could not start PostgreSQL automatically — may already be running"
+  PG_CLUSTER=$(pg_lsclusters -h 2>/dev/null | awk '{print $2}' | head -1)
+  STATUS=$(pg_lsclusters -h 2>/dev/null | awk '{print $4}' | head -1)
+  info "Cluster: $PG_VERSION/$PG_CLUSTER (status: $STATUS)"
+  if [ "$STATUS" != "online" ]; then
+    info "Starting cluster..."
+    pg_ctlcluster "$PG_VERSION" "$PG_CLUSTER" start
+  else
+    ok "Cluster already online"
+  fi
 fi
 
-# Wait for PostgreSQL to be ready
-for i in $(seq 1 15); do
-  pg_isready -q && break
+# ── Wait for PostgreSQL to be ready ───────────────────────────────────────
+info "Waiting for PostgreSQL..."
+for i in $(seq 1 20); do
+  pg_isready -q 2>/dev/null && break
   sleep 1
+  echo -n "."
 done
-pg_isready || { echo "[db] PostgreSQL did not become ready in time"; exit 1; }
+echo ""
+pg_isready 2>/dev/null || die "PostgreSQL did not become ready — check: pg_lsclusters"
 ok "PostgreSQL is ready"
 
-# ── Create database & user ─────────────────────────────────────────────────
-info "Setting up database '$DB_NAME'..."
+# ── Set postgres password & create database ───────────────────────────────
+info "Configuring database '$DB_NAME'..."
+su - postgres -c "psql -c \"ALTER USER postgres WITH PASSWORD '$DB_PASS';\"" 2>/dev/null \
+  || warn "Could not set postgres password (may already be set)"
 
-su - postgres -c "psql -tc \"SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'\" | grep -q 1 || \
-  psql -c \"ALTER USER $DB_USER WITH PASSWORD '$DB_PASS';\"" 2>/dev/null || \
-  su - postgres -c "psql -c \"ALTER USER postgres WITH PASSWORD '$DB_PASS';\"" 2>/dev/null || \
-  warn "Could not set postgres password — continuing"
+su - postgres -c "psql -tc \"SELECT 1 FROM pg_database WHERE datname='$DB_NAME'\" | grep -q 1 \
+  || createdb $DB_NAME" 2>/dev/null
+ok "Database '$DB_NAME' is ready"
 
-su - postgres -c "psql -tc \"SELECT 1 FROM pg_database WHERE datname='$DB_NAME'\" | grep -q 1 || \
-  createdb $DB_NAME" 2>/dev/null
-ok "Database '$DB_NAME' ready"
-
-# ── Write .env ─────────────────────────────────────────────────────────────
+# ── Write .env ────────────────────────────────────────────────────────────
 DATABASE_URL="postgresql://${DB_USER}:${DB_PASS}@localhost:${DB_PORT}/${DB_NAME}"
 
 if [ -f "$ENV_FILE" ]; then
-  # Update DATABASE_URL line if it exists, otherwise append
   if grep -q "^DATABASE_URL=" "$ENV_FILE"; then
     sed -i "s|^DATABASE_URL=.*|DATABASE_URL=${DATABASE_URL}|" "$ENV_FILE"
   else
     echo "DATABASE_URL=${DATABASE_URL}" >> "$ENV_FILE"
   fi
+  ok ".env updated"
 else
   cat > "$ENV_FILE" <<EOF
 # Bytenut environment — auto-generated by setup-db.sh
@@ -99,10 +94,10 @@ DATABASE_URL=${DATABASE_URL}
 # PROXY_PASSWORD=
 # PROXY_PROTOCOL=https
 EOF
+  ok ".env created"
 fi
 
-ok ".env written → $ENV_FILE"
 echo ""
 echo -e "  ${CYAN}DATABASE_URL${NC} = $DATABASE_URL"
 echo ""
-ok "Database setup complete"
+ok "Database setup complete — run: bash start.sh"
