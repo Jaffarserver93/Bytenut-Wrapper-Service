@@ -58,7 +58,17 @@ if [ "$STATUS" = "online" ]; then
   ok "Cluster already online"
 else
   info "Starting cluster $PG_VERSION/$PG_CLUSTER..."
-  pg_ctlcluster "$PG_VERSION" "$PG_CLUSTER" start
+  # In proot/Termux the data dir must not be owned/started by root.
+  # Run pg_ctl directly as the postgres user instead of pg_ctlcluster.
+  PG_DATA="/var/lib/postgresql/$PG_VERSION/$PG_CLUSTER"
+  PG_LOG="/var/log/postgresql/postgresql-$PG_VERSION-$PG_CLUSTER.log"
+  touch "$PG_LOG" && chown postgres:postgres "$PG_LOG" 2>/dev/null || true
+  mkdir -p /var/run/postgresql && chown postgres:postgres /var/run/postgresql 2>/dev/null || true
+  su - postgres -c "/usr/lib/postgresql/$PG_VERSION/bin/pg_ctl \
+    -D $PG_DATA \
+    -l $PG_LOG \
+    -o '-c unix_socket_directories=/var/run/postgresql' \
+    start"
   ok "Cluster started"
 fi
 
