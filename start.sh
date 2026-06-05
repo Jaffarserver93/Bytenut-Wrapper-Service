@@ -41,22 +41,18 @@ else
   warn "Xvfb not found — puppeteer may not work (apt install xvfb to fix)"
 fi
 
-# ── 2. Database setup (first run creates .env) ─────────────────────────────
+# ── 2. Check .env / database ───────────────────────────────────────────────
 ENV_FILE="$WORKSPACE_DIR/.env"
 if [ ! -f "$ENV_FILE" ]; then
-  info "No .env found — running database setup..."
-  bash "$WORKSPACE_DIR/setup-db.sh"
-else
-  info ".env found — skipping database setup"
-  # Make sure PostgreSQL is running
-  if command -v pg_isready &>/dev/null && ! pg_isready -q 2>/dev/null; then
-    info "PostgreSQL not running — starting it..."
-    PG_VER=$(ls /usr/lib/postgresql/ 2>/dev/null | sort -V | tail -1)
-    PG_DATA="/var/lib/postgresql/$PG_VER/main"
-    su - postgres -c "/usr/lib/postgresql/$PG_VER/bin/pg_ctl -D $PG_DATA -l /tmp/postgresql.log start -w" 2>/dev/null \
-      || warn "Could not start PostgreSQL — run: bash setup-db.sh"
-  fi
+  die ".env not found. Create it first:\n\n  echo 'DATABASE_URL=<your-postgres-url>' > $WORKSPACE_DIR/.env\n\nOr run: bash setup-db.sh  (sets up a local PostgreSQL database)"
 fi
+
+# Load .env to validate DATABASE_URL
+set -a; source "$ENV_FILE"; set +a
+if [ -z "$DATABASE_URL" ]; then
+  die "DATABASE_URL is not set in .env — add it and re-run"
+fi
+ok "DATABASE_URL found in .env"
 
 # ── 3. Install workspace deps ──────────────────────────────────────────────
 info "Installing workspace dependencies (this may take a few minutes)..."
