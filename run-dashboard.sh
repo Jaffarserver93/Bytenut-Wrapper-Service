@@ -9,4 +9,4 @@ export PORT=5173
 export BASE_PATH=/
 export NODE_ENV=development
 
-exec "$WORKSPACE_DIR/node_modules/.bin/vite" --config vite.config.ts --host 0.0.0.0 --port 5173
+exec "$DASH_DIR/node_modules/.bin/vite" --config vite.config.ts --host 0.0.0.0 --port 5173
