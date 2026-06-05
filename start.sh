@@ -51,10 +51,10 @@ else
   # Make sure PostgreSQL is running
   if command -v pg_isready &>/dev/null && ! pg_isready -q 2>/dev/null; then
     info "PostgreSQL not running — starting it..."
-    service postgresql start 2>/dev/null || \
-      pg_ctlcluster "$(pg_lsclusters -h | awk '{print $1}' | head -1)" \
-                    "$(pg_lsclusters -h | awk '{print $2}' | head -1)" start 2>/dev/null || \
-      warn "Could not start PostgreSQL — run: bash setup-db.sh"
+    PG_VER=$(ls /usr/lib/postgresql/ 2>/dev/null | sort -V | tail -1)
+    PG_DATA="/var/lib/postgresql/$PG_VER/main"
+    su - postgres -c "/usr/lib/postgresql/$PG_VER/bin/pg_ctl -D $PG_DATA -l /tmp/postgresql.log start -w" 2>/dev/null \
+      || warn "Could not start PostgreSQL — run: bash setup-db.sh"
   fi
 fi
 

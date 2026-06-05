@@ -12,7 +12,6 @@ warn() { echo -e "${YELLOW}[!]${NC} $*"; }
 die()  { echo -e "${RED}[✗]${NC} $*"; exit 1; }
 
 DB_NAME="bytenut"
-DB_USER="postgres"
 DB_PASS="bytenut123"
 DB_PORT="5432"
 
@@ -27,91 +26,87 @@ fi
 
 # ── Detect PostgreSQL version ──────────────────────────────────────────────
 PG_VERSION=$(ls /usr/lib/postgresql/ 2>/dev/null | sort -V | tail -1)
-[ -z "$PG_VERSION" ] && die "Cannot find PostgreSQL in /usr/lib/postgresql/"
-info "PostgreSQL version: $PG_VERSION"
+[ -z "$PG_VERSION" ] && die "Cannot find PostgreSQL under /usr/lib/postgresql/"
+PG_BIN="/usr/lib/postgresql/$PG_VERSION/bin"
+PG_DATA="/var/lib/postgresql/$PG_VERSION/main"
+PG_LOG="/tmp/postgresql.log"
+PG_SOCKET="/var/run/postgresql"
+info "PostgreSQL $PG_VERSION  |  data: $PG_DATA"
 
-# ── Detect cluster (pg_lsclusters -h only prints data rows, no header) ─────
-# Suppress stderr so "No clusters exist" warning doesn't pollute output
-PG_CLUSTER_LINE=$(pg_lsclusters -h 2>/dev/null | grep -v '^\s*$' | head -1 || true)
-
-if [ -z "$PG_CLUSTER_LINE" ]; then
-  info "No cluster found — creating 'main' cluster..."
-  # Wipe any partial directory from a previous failed attempt
-  rm -rf "/var/lib/postgresql/$PG_VERSION/main" 2>/dev/null || true
-  # In proot/Termux environments the postgres user must own and create
-  # its own data directory — running pg_createcluster as root causes
-  # initdb to fail with "wrong ownership" even after chown.
-  mkdir -p "/var/lib/postgresql/$PG_VERSION"
-  chown postgres:postgres "/var/lib/postgresql/$PG_VERSION"
-  su - postgres -c "pg_createcluster $PG_VERSION main"
-  ok "Cluster 'main' created"
-  PG_CLUSTER="main"
+# ── Skip everything if already running ────────────────────────────────────
+if pg_isready -q -h localhost -p "$DB_PORT" 2>/dev/null; then
+  ok "PostgreSQL is already running"
 else
-  PG_CLUSTER=$(echo "$PG_CLUSTER_LINE" | awk '{print $2}')
-  STATUS=$(echo   "$PG_CLUSTER_LINE" | awk '{print $4}')
-  info "Found cluster: $PG_VERSION/$PG_CLUSTER (status: ${STATUS:-unknown})"
+  # ── Wipe any partial/corrupt data directory ────────────────────────────
+  if [ ! -f "$PG_DATA/postgresql.conf" ]; then
+    info "Data directory empty or missing postgresql.conf — reinitialising..."
+    rm -rf "$PG_DATA"
+    mkdir -p "$PG_DATA"
+    chown postgres:postgres "$PG_DATA"
+
+    # Drop stale cluster entry so pg_createcluster doesn't complain
+    pg_dropcluster "$PG_VERSION" main 2>/dev/null || true
+
+    # Initialise directly as postgres user (bypasses pg_createcluster ownership issues)
+    su - postgres -c "$PG_BIN/initdb \
+      -D $PG_DATA \
+      -U postgres \
+      --auth-local trust \
+      --auth-host md5" \
+      || die "initdb failed — check /tmp/postgresql.log"
+    ok "Data directory initialised"
+  fi
+
+  # ── Patch postgresql.conf for proot/Termux compatibility ──────────────
+  CONF="$PG_DATA/postgresql.conf"
+  grep -q "^shared_memory_type"         "$CONF" || echo "shared_memory_type = mmap"         >> "$CONF"
+  grep -q "^dynamic_shared_memory_type" "$CONF" || echo "dynamic_shared_memory_type = mmap" >> "$CONF"
+  grep -q "^unix_socket_directories"    "$CONF" \
+    && sed -i "s|^unix_socket_directories.*|unix_socket_directories = '$PG_SOCKET'|" "$CONF" \
+    || echo "unix_socket_directories = '$PG_SOCKET'" >> "$CONF"
+
+  # ── Prepare socket directory ───────────────────────────────────────────
+  mkdir -p "$PG_SOCKET"
+  chown postgres:postgres "$PG_SOCKET"
+
+  # ── Start PostgreSQL ───────────────────────────────────────────────────
+  info "Starting PostgreSQL..."
+  su - postgres -c "$PG_BIN/pg_ctl -D $PG_DATA -l $PG_LOG start -w" || {
+    warn "pg_ctl start failed. Log:"
+    echo "────────────────────────────────"
+    tail -30 "$PG_LOG" 2>/dev/null || echo "(log empty)"
+    echo "────────────────────────────────"
+    die "PostgreSQL could not start — see log above"
+  }
+
+  # ── Wait ───────────────────────────────────────────────────────────────
+  for i in $(seq 1 20); do
+    pg_isready -h localhost -p "$DB_PORT" -q 2>/dev/null && break
+    sleep 1 && echo -n "."
+  done
+  echo ""
+  pg_isready -h localhost -p "$DB_PORT" 2>/dev/null || die "PostgreSQL still not ready"
+  ok "PostgreSQL is ready"
 fi
 
-# ── Start cluster ──────────────────────────────────────────────────────────
-STATUS=$(pg_lsclusters -h 2>/dev/null | grep " $PG_CLUSTER " | awk '{print $4}' || echo "")
-if [ "$STATUS" = "online" ]; then
-  ok "Cluster already online"
-else
-  info "Starting cluster $PG_VERSION/$PG_CLUSTER..."
-  PG_DATA="/var/lib/postgresql/$PG_VERSION/$PG_CLUSTER"
-  PG_LOG="/var/log/postgresql/postgresql-$PG_VERSION-$PG_CLUSTER.log"
-  touch "$PG_LOG" && chown postgres:postgres "$PG_LOG" 2>/dev/null || true
-  mkdir -p /var/run/postgresql && chown postgres:postgres /var/run/postgresql 2>/dev/null || true
-
-  # proot/Termux needs mmap instead of POSIX shared memory and semaphores
-  PGOPTS="-c unix_socket_directories=/var/run/postgresql \
-          -c shared_memory_type=mmap \
-          -c dynamic_shared_memory_type=mmap"
-
-  su - postgres -c "/usr/lib/postgresql/$PG_VERSION/bin/pg_ctl \
-    -D $PG_DATA \
-    -l $PG_LOG \
-    -o \"$PGOPTS\" \
-    start" || {
-      echo ""
-      warn "PostgreSQL failed to start. Last log lines:"
-      echo "────────────────────────────────────────"
-      tail -30 "$PG_LOG" 2>/dev/null || echo "(log empty)"
-      echo "────────────────────────────────────────"
-      die "Fix the error above then re-run: bash setup-db.sh"
-    }
-  ok "Cluster started"
-fi
-
-# ── Wait for PostgreSQL to be ready ───────────────────────────────────────
-info "Waiting for PostgreSQL to accept connections..."
-for i in $(seq 1 20); do
-  pg_isready -q 2>/dev/null && break
-  sleep 1
-  echo -n "."
-done
-echo ""
-pg_isready 2>/dev/null || die "PostgreSQL did not become ready — run: pg_lsclusters"
-ok "PostgreSQL is ready"
-
-# ── Set postgres password & create database ───────────────────────────────
-info "Configuring user and database '$DB_NAME'..."
+# ── Set postgres password ──────────────────────────────────────────────────
+info "Setting postgres password..."
 su - postgres -c "psql -c \"ALTER USER postgres WITH PASSWORD '$DB_PASS';\"" \
-  || warn "Could not set postgres password"
+  || warn "Could not set password (may already be set)"
 
+# ── Create database ────────────────────────────────────────────────────────
+info "Creating database '$DB_NAME'..."
 su - postgres -c "psql -tc \"SELECT 1 FROM pg_database WHERE datname='$DB_NAME'\" \
   | grep -q 1 || createdb $DB_NAME"
-ok "Database '$DB_NAME' is ready"
+ok "Database '$DB_NAME' ready"
 
-# ── Write .env ────────────────────────────────────────────────────────────
-DATABASE_URL="postgresql://${DB_USER}:${DB_PASS}@localhost:${DB_PORT}/${DB_NAME}"
+# ── Write .env ─────────────────────────────────────────────────────────────
+DATABASE_URL="postgresql://postgres:${DB_PASS}@localhost:${DB_PORT}/${DB_NAME}"
 
 if [ -f "$ENV_FILE" ]; then
-  if grep -q "^DATABASE_URL=" "$ENV_FILE"; then
-    sed -i "s|^DATABASE_URL=.*|DATABASE_URL=${DATABASE_URL}|" "$ENV_FILE"
-  else
-    echo "DATABASE_URL=${DATABASE_URL}" >> "$ENV_FILE"
-  fi
+  grep -q "^DATABASE_URL=" "$ENV_FILE" \
+    && sed -i "s|^DATABASE_URL=.*|DATABASE_URL=${DATABASE_URL}|" "$ENV_FILE" \
+    || echo "DATABASE_URL=${DATABASE_URL}" >> "$ENV_FILE"
   ok ".env updated"
 else
   cat > "$ENV_FILE" <<EOF
