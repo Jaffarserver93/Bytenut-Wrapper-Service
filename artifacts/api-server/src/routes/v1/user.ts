@@ -46,15 +46,27 @@ async function resolveSession(
   });
 }
 
-/** Re-acquire session after a 401/403, bypassing cache. */
+/** Returns true if the response body looks like a Cloudflare block page (not a real auth error). */
+function isCloudflareBlock(body: unknown): boolean {
+  if (typeof body !== "string") return false;
+  return body.includes("Cloudflare") && (body.includes("blocked") || body.includes("cf-error"));
+}
+
+/** Re-acquire session after a real auth error, bypassing cache.
+ *  Uses the shared loginInFlight map so parallel requests share one browser session. */
 async function reacquireSession(
   username: string,
   password: string,
+  log: Request["log"],
 ): Promise<CachedSession> {
   const proxy = getProxyFromEnv();
   invalidateCachedToken(username);
-  const { ylToken, cookieHeader } = await loginWithBrowser(username, password, proxy);
-  return { token: ylToken, cookies: cookieHeader, cachedAt: Date.now() };
+  // Use getOrAcquireSession so concurrent re-login calls share one browser session
+  return getOrAcquireSession(username, async () => {
+    log.info({ username }, "Re-acquiring session with fresh browser login...");
+    const { ylToken, cookieHeader } = await loginWithBrowser(username, password, proxy);
+    return { token: ylToken, cookies: cookieHeader, cachedAt: Date.now() };
+  });
 }
 
 router.post("/servers", async (req: Request, res: Response) => {
@@ -68,9 +80,9 @@ router.post("/servers", async (req: Request, res: Response) => {
     let session = await resolveSession(username, password, req.log);
     let { status, body } = await fetchWithSession(session, "/game-panel/api/gpPanelServer/user/servers");
 
-    if (status === 401 || status === 403) {
+    if ((status === 401 || status === 403) && !isCloudflareBlock(body)) {
       req.log.warn({ username, status }, "Got auth error — re-logging in");
-      session = await reacquireSession(username, password);
+      session = await reacquireSession(username, password, req.log);
       ({ status, body } = await fetchWithSession(session, "/game-panel/api/gpPanelServer/user/servers"));
     }
 
@@ -97,9 +109,9 @@ router.post("/profile", async (req: Request, res: Response) => {
     let session = await resolveSession(username, password, req.log);
     let { status, body } = await fetchWithSession(session, "/common/user/current");
 
-    if (status === 401 || status === 403) {
+    if ((status === 401 || status === 403) && !isCloudflareBlock(body)) {
       req.log.warn({ username, status }, "Got auth error — re-logging in");
-      session = await reacquireSession(username, password);
+      session = await reacquireSession(username, password, req.log);
       ({ status, body } = await fetchWithSession(session, "/common/user/current"));
     }
 
@@ -126,9 +138,9 @@ router.post("/balance", async (req: Request, res: Response) => {
     let session = await resolveSession(username, password, req.log);
     let { status, body } = await fetchWithSession(session, "/common/user/current");
 
-    if (status === 401 || status === 403) {
+    if ((status === 401 || status === 403) && !isCloudflareBlock(body)) {
       req.log.warn({ username, status }, "Got auth error — re-logging in");
-      session = await reacquireSession(username, password);
+      session = await reacquireSession(username, password, req.log);
       ({ status, body } = await fetchWithSession(session, "/common/user/current"));
     }
 
@@ -167,9 +179,9 @@ router.post("/extension-info/:serverId", async (req: Request, res: Response) => 
     let session = await resolveSession(username, password, req.log);
     let { status, body } = await fetchWithSession(session, `/game-panel/api/gp-free-server/extension-info/${serverId}`);
 
-    if (status === 401 || status === 403) {
+    if ((status === 401 || status === 403) && !isCloudflareBlock(body)) {
       req.log.warn({ username, status }, "Got auth error — re-logging in");
-      session = await reacquireSession(username, password);
+      session = await reacquireSession(username, password, req.log);
       ({ status, body } = await fetchWithSession(session, `/game-panel/api/gp-free-server/extension-info/${serverId}`));
     }
 
