@@ -458,7 +458,7 @@ export async function loginWithBrowser(
     // wait for the Vue app to render the login route instead of throwing.
     logger.info("Navigating to login page...");
     await page
-      .goto(`${BYTENUT_BASE_URL}/login`, {
+      .goto(`${BYTENUT_BASE_URL}/auth/login`, {
         waitUntil: "domcontentloaded",
         timeout: 60000,
       })
