@@ -452,15 +452,29 @@ export async function loginWithBrowser(
     await waitForCloudflare(page, 45000);
     await sleep(2000);
 
-    // Step 2: Navigate to the login page
+    // Step 2: Navigate to the login page.
+    // Bytenut uses Vue.js SPA — the server may redirect or abort the initial
+    // navigation while the client-side router takes over. Catch ERR_ABORTED and
+    // wait for the Vue app to render the login route instead of throwing.
     logger.info("Navigating to login page...");
-    await page.goto(`${BYTENUT_BASE_URL}/login`, {
-      waitUntil: "domcontentloaded",
-      timeout: 60000,
-    });
+    await page
+      .goto(`${BYTENUT_BASE_URL}/login`, {
+        waitUntil: "domcontentloaded",
+        timeout: 60000,
+      })
+      .catch((err: Error) => {
+        if (err.message?.includes("ERR_ABORTED")) {
+          logger.info(
+            "Login page navigation aborted (SPA client-side routing) — waiting for Vue app to render...",
+          );
+        } else {
+          throw err;
+        }
+      });
     await assertNotErrorPage(page, "login page");
     await waitForCloudflare(page, 45000);
-    await sleep(2000);
+    // Extra wait for Vue app to mount and render the login form
+    await sleep(4000);
 
     const pageUrl: string = page.url();
     const pageTitle: string = await page.title().catch(() => "(navigated away)");
