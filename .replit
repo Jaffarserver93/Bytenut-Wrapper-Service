@@ -40,7 +40,7 @@ externalPort = 3000
 [userenv.shared]
 DISPLAY = ":99"
 CHROME_PATH = "/nix/store/qa9cnw4v5xkxyip6mb9kxqfq1z4x2dx1-chromium-138.0.7204.100/bin/chromium"
-PROXY_PASSWORD = "+5~q9LfVXCYp8"
+PROXY_PASSWORD = "R=Y0OlIeVz4yqt"
 PROXY_HOST = "dc.oxylabs.io"
 PROXY_PORT = "8001"
 PROXY_PROTOCOL = "http"
