@@ -7,7 +7,7 @@ function buildClient(): AxiosInstance {
   const port = Number(process.env["PROXY_PORT"]);
   const username = process.env["PROXY_USERNAME"];
   const password = process.env["PROXY_PASSWORD"];
-  const protocol = process.env["PROXY_PROTOCOL"] ?? "https";
+  const protocol = process.env["PROXY_PROTOCOL"] ?? "http";
 
   const hasProxy = !!host && !!port;
 

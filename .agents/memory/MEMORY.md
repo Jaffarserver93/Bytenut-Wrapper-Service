@@ -1,1 +1,2 @@
 - [Cloudflare WAF blocks datacenter IPs](cloudflare-datacenter-block.md) — Bytenut.com blocks Replit/cloud IPs at WAF level; residential proxy required for browser auth to work.
+- [Proxy protocol default bug](proxy-protocol-default.md) — PROXY_PROTOCOL must default to "http" not "https"; credentials must be embedded in --proxy-server URL for HTTPS CONNECT tunneling.

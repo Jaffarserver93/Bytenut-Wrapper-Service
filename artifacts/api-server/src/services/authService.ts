@@ -24,7 +24,7 @@ export function getProxyFromEnv(): ProxyConfig | null {
   const port = Number(process.env["PROXY_PORT"]);
   if (!host || !port) return null;
   return {
-    protocol: process.env["PROXY_PROTOCOL"] ?? "https",
+    protocol: process.env["PROXY_PROTOCOL"] ?? "http",
     host,
     port,
     username: process.env["PROXY_USERNAME"],
@@ -34,14 +34,19 @@ export function getProxyFromEnv(): ProxyConfig | null {
 
 /**
  * Build the --proxy-server Chrome arg.
- * Credentials are NOT embedded in the URL — Chrome ignores them for CONNECT tunnels.
- * Use page.authenticate() instead (handles HTTP 407 proxy auth challenge properly).
+ * Credentials ARE embedded in the URL — this is the correct method for HTTPS CONNECT
+ * tunneling. Chrome uses them to authenticate the CONNECT request to the proxy.
+ * page.authenticate() only handles HTTP 407 on regular HTTP responses, not CONNECT.
  */
 function buildProxyArgs(proxy: ProxyConfig | null): string[] {
   if (!proxy) return [];
-  const { protocol, host, port } = proxy;
+  const { protocol, host, port, username, password } = proxy;
+  const auth =
+    username && password
+      ? `${encodeURIComponent(username)}:${encodeURIComponent(password)}@`
+      : "";
   return [
-    `--proxy-server=${protocol}://${host}:${port}`,
+    `--proxy-server=${protocol}://${auth}${host}:${port}`,
     "--ignore-certificate-errors",
     "--ignore-certificate-errors-spki-list",
   ];
@@ -74,14 +79,40 @@ async function assertNotErrorPage(
   context: string,
 ): Promise<void> {
   const url: string = page.url();
-  if (url.startsWith("chrome-error://") || url.startsWith("about:blank")) {
+  if (url.startsWith("chrome-error://")) {
+    // Read the actual Chrome error code from the error page DOM
+    const chromeErrorCode: string = await page
+      .evaluate(() => {
+        // Chrome error pages expose error info in `window.loadTimeData` or the DOM
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const ltd = (window as any).loadTimeData;
+        if (ltd) {
+          return (
+            ltd.getValue?.("errorCode") ??
+            ltd.getValue?.("summary") ??
+            "(loadTimeData present but no errorCode)"
+          );
+        }
+        // Fallback: read visible text from the page
+        return (
+          (document.querySelector("#main-message > p") as HTMLElement)
+            ?.innerText ??
+          document.body?.innerText?.slice(0, 200) ??
+          "(could not read error page)"
+        );
+      })
+      .catch(() => "(could not evaluate error page)");
+
     const display = process.env["DISPLAY"] ?? "(not set)";
-    const hasProxy = !!(process.env["PROXY_HOST"]);
+    const proxyHost = process.env["PROXY_HOST"] ?? "(none)";
+    const proxyPort = process.env["PROXY_PORT"] ?? "(none)";
+    const proxyProtocol = process.env["PROXY_PROTOCOL"] ?? "http (default)";
     throw new Error(
-      `Navigation failed at "${context}" — browser landed on error page (${url}). ` +
-        `DISPLAY=${display}, proxy configured=${hasProxy}. ` +
-        `On Termux: ensure Xvfb is running (auto-installed by run-api.sh) and DISPLAY=:99 is set. ` +
-        `If proxy env vars are set but unreachable, remove them from .env to connect directly.`,
+      `Navigation failed at "${context}" — Chrome error page. ` +
+        `Chrome error: ${chromeErrorCode}. ` +
+        `DISPLAY=${display}. ` +
+        `Proxy: ${proxyProtocol}://${proxyHost}:${proxyPort}. ` +
+        `Fix: ensure PROXY_PROTOCOL=http (not https) in .env, and proxy host/port/credentials are correct.`,
     );
   }
 }
