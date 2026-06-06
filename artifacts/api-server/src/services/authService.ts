@@ -193,8 +193,9 @@ export async function extendServerWithBrowser(
       "Using proxy for browser session (extend)",
     );
   } else {
-    logger.warn(
-      "No proxy configured for extend — Cloudflare WILL block this datacenter IP.",
+    logger.info(
+      "No proxy configured for extend — connecting directly. " +
+        "Correct for residential/Termux. Set PROXY_HOST only for cloud/datacenter IPs.",
     );
   }
 
@@ -408,9 +409,10 @@ export async function loginWithBrowser(
         "Using proxy for browser session (login)",
       );
     } else {
-      logger.warn(
-        "No proxy configured — Cloudflare WILL block this datacenter IP. " +
-          "Set PROXY_HOST / PROXY_PORT / PROXY_USERNAME / PROXY_PASSWORD env vars.",
+      logger.info(
+        "No proxy configured — connecting directly. " +
+          "This is correct for residential/Termux environments. " +
+          "Only set PROXY_HOST if running from a datacenter/cloud IP.",
       );
     }
 
