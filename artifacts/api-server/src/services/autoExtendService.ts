@@ -1,8 +1,9 @@
 import { logger } from "../lib/logger.js";
-import { httpClient } from "../lib/httpClient.js";
+import { httpClient, BYTENUT_BROWSER_HEADERS } from "../lib/httpClient.js";
 import {
-  getCachedToken,
-  setCachedToken,
+  getCachedSession,
+  setCachedSession,
+  type CachedSession,
 } from "./tokenCache.js";
 import {
   loginWithBrowser,
@@ -66,25 +67,29 @@ export function getAllConfigs(): AutoExtendConfig[] {
   return Array.from(configs.values());
 }
 
-async function getOrFreshToken(username: string, password: string): Promise<string> {
-  const cached = getCachedToken(username);
+async function getOrFreshSession(username: string, password: string): Promise<CachedSession> {
+  const cached = getCachedSession(username);
   if (cached) return cached;
-  logger.info({ username }, "[auto-extend] No cached token — running browser auth");
+  logger.info({ username }, "[auto-extend] No cached session — running browser auth");
   const proxy = getProxyFromEnv();
-  const fresh = await loginWithBrowser(username, password, proxy);
-  setCachedToken(username, fresh);
-  return fresh;
+  const { ylToken, cookieHeader } = await loginWithBrowser(username, password, proxy);
+  setCachedSession(username, ylToken, cookieHeader);
+  return { token: ylToken, cookies: cookieHeader, cachedAt: Date.now() };
 }
 
 async function fetchExtensionInfo(
-  token: string,
+  session: CachedSession,
   serverId: string,
 ): Promise<{ minutesUntilExpiration: number; canExtend: boolean } | null> {
   try {
     const res = await httpClient.get(
       `${BYTENUT_BASE_URL}/game-panel/api/gp-free-server/extension-info/${serverId}`,
       {
-        headers: { "yl-token": token, Accept: "application/json" },
+        headers: {
+          ...BYTENUT_BROWSER_HEADERS,
+          "yl-token": session.token,
+          ...(session.cookies ? { Cookie: session.cookies } : {}),
+        },
         validateStatus: () => true,
       },
     );
@@ -104,8 +109,8 @@ async function runAutoExtendForConfig(config: AutoExtendConfig): Promise<void> {
   }
 
   try {
-    const token = await getOrFreshToken(config.username, config.password);
-    const info = await fetchExtensionInfo(token, config.serverId);
+    const session = await getOrFreshSession(config.username, config.password);
+    const info = await fetchExtensionInfo(session, config.serverId);
 
     if (!info) {
       logger.warn({ key }, "[auto-extend] Could not fetch extension info");
@@ -127,22 +132,14 @@ async function runAutoExtendForConfig(config: AutoExtendConfig): Promise<void> {
     if (info.minutesUntilExpiration > cfg.thresholdMinutes) {
       cfg.status = "idle";
       logger.info(
-        {
-          key,
-          minutesUntilExpiration: info.minutesUntilExpiration,
-          threshold: cfg.thresholdMinutes,
-        },
+        { key, minutesUntilExpiration: info.minutesUntilExpiration, threshold: cfg.thresholdMinutes },
         "[auto-extend] Above threshold, no extend needed",
       );
       return;
     }
 
     logger.info(
-      {
-        key,
-        minutesUntilExpiration: info.minutesUntilExpiration,
-        threshold: cfg.thresholdMinutes,
-      },
+      { key, minutesUntilExpiration: info.minutesUntilExpiration, threshold: cfg.thresholdMinutes },
       "[auto-extend] Below threshold — triggering browser extend",
     );
 
@@ -150,11 +147,11 @@ async function runAutoExtendForConfig(config: AutoExtendConfig): Promise<void> {
     cfg.status = "extending";
 
     const proxy = getProxyFromEnv();
-    const result = await extendServerWithBrowser(config.serverId, token, proxy);
+    const result = await extendServerWithBrowser(config.serverId, session.token, proxy);
 
     cfg.lastExtendedAt = Date.now();
     cfg.lastError = result.success ? null : result.message;
-    cfg.status = result.success ? "idle" : "idle";
+    cfg.status = "idle";
 
     logger.info({ key, success: result.success, message: result.message }, "[auto-extend] Extend result");
   } catch (err) {
@@ -172,9 +169,7 @@ async function runAutoExtendForConfig(config: AutoExtendConfig): Promise<void> {
 async function pollAll(): Promise<void> {
   const enabled = Array.from(configs.values()).filter((c) => c.enabled);
   if (enabled.length === 0) return;
-
   logger.info({ count: enabled.length }, "[auto-extend] Polling configs");
-
   await Promise.allSettled(enabled.map((c) => runAutoExtendForConfig(c)));
 }
 

@@ -385,7 +385,7 @@ export async function loginWithBrowser(
   username: string,
   password: string,
   proxy: ProxyConfig | null = null,
-): Promise<string> {
+): Promise<{ ylToken: string; cookieHeader: string }> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let browser: any = null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -651,8 +651,20 @@ export async function loginWithBrowser(
       );
     }
 
+    // Capture all browser cookies to replay them in subsequent API requests.
+    // Bytenut's API checks cf_clearance and session cookies alongside the yl-token.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rawCookies: any[] = await page.cookies().catch(() => []);
+    const cookieHeader = rawCookies
+      .map((c: { name: string; value: string }) => `${c.name}=${c.value}`)
+      .join("; ");
+    logger.info(
+      { username, cookieCount: rawCookies.length },
+      "Captured browser cookies for API replay",
+    );
+
     logger.info({ username }, "Successfully extracted yl-token");
-    return ylToken;
+    return { ylToken, cookieHeader };
   } catch (err) {
     logger.error({ err, username }, "Browser authentication failed");
     throw err;

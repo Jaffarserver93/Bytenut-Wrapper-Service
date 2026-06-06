@@ -1,6 +1,6 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { loginWithBrowser, getProxyFromEnv } from "../../services/authService.js";
-import { getOrAcquireToken } from "../../services/tokenCache.js";
+import { getOrAcquireSession } from "../../services/tokenCache.js";
 
 const router: IRouter = Router();
 
@@ -17,11 +17,12 @@ router.post("/login", async (req: Request, res: Response) => {
 
   try {
     const proxy = getProxyFromEnv();
-    const ylToken = await getOrAcquireToken(username, () => {
-      req.log.info({ username }, "No cached token — starting browser auth");
-      return loginWithBrowser(username, password, proxy);
+    const session = await getOrAcquireSession(username, async () => {
+      req.log.info({ username }, "No cached session — starting browser auth");
+      const { ylToken, cookieHeader } = await loginWithBrowser(username, password, proxy);
+      return { token: ylToken, cookies: cookieHeader, cachedAt: Date.now() };
     });
-    res.json({ ylToken, cached: false });
+    res.json({ ylToken: session.token, cached: false });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     req.log.error({ username, err }, "Login via browser failed");

@@ -1,28 +1,31 @@
-export interface CachedToken {
+export interface CachedSession {
   token: string;
+  cookies: string;
   cachedAt: number;
 }
 
-const tokenCache = new Map<string, CachedToken>();
-const loginInFlight = new Map<string, Promise<string>>();
+const tokenCache = new Map<string, CachedSession>();
+const loginInFlight = new Map<string, Promise<CachedSession>>();
 
 const TTL_MS = 60 * 60 * 1000;
 
-export function getCachedToken(username: string): string | null {
+export function getCachedSession(username: string): CachedSession | null {
   const entry = tokenCache.get(username);
   if (!entry) return null;
-
-  const age = Date.now() - entry.cachedAt;
-  if (age > TTL_MS) {
+  if (Date.now() - entry.cachedAt > TTL_MS) {
     tokenCache.delete(username);
     return null;
   }
-
-  return entry.token;
+  return entry;
 }
 
-export function setCachedToken(username: string, token: string): void {
-  tokenCache.set(username, { token, cachedAt: Date.now() });
+/** @deprecated Use getCachedSession */
+export function getCachedToken(username: string): string | null {
+  return getCachedSession(username)?.token ?? null;
+}
+
+export function setCachedSession(username: string, token: string, cookies: string): void {
+  tokenCache.set(username, { token, cookies, cachedAt: Date.now() });
 }
 
 export function invalidateCachedToken(username: string): void {
@@ -39,21 +42,21 @@ export function getCacheSize(): number {
  * If a login is already in progress, all callers await the same promise
  * instead of each launching their own browser session.
  */
-export function getOrAcquireToken(
+export function getOrAcquireSession(
   username: string,
-  doLogin: () => Promise<string>,
-): Promise<string> {
-  const cached = getCachedToken(username);
+  doLogin: () => Promise<CachedSession>,
+): Promise<CachedSession> {
+  const cached = getCachedSession(username);
   if (cached) return Promise.resolve(cached);
 
   const existing = loginInFlight.get(username);
   if (existing) return existing;
 
   const promise = doLogin().then(
-    (token) => {
-      setCachedToken(username, token);
+    (session) => {
+      setCachedSession(username, session.token, session.cookies);
       loginInFlight.delete(username);
-      return token;
+      return session;
     },
     (err) => {
       loginInFlight.delete(username);
@@ -63,4 +66,35 @@ export function getOrAcquireToken(
 
   loginInFlight.set(username, promise);
   return promise;
+}
+
+/** Legacy shim for callers that only need the token string. */
+export function getOrAcquireToken(
+  username: string,
+  doLogin: () => Promise<string>,
+): Promise<string> {
+  const cached = getCachedSession(username);
+  if (cached) return Promise.resolve(cached.token);
+
+  const existing = loginInFlight.get(username);
+  if (existing) return existing.then((s) => s.token);
+
+  const promise = (async () => {
+    const token = await doLogin();
+    const session: CachedSession = { token, cookies: "", cachedAt: Date.now() };
+    setCachedSession(username, token, "");
+    return session;
+  })().then(
+    (session) => {
+      loginInFlight.delete(username);
+      return session;
+    },
+    (err) => {
+      loginInFlight.delete(username);
+      throw err;
+    },
+  );
+
+  loginInFlight.set(username, promise);
+  return promise.then((s) => s.token);
 }

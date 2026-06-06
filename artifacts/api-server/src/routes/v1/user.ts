@@ -1,11 +1,12 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { loginWithBrowser, getProxyFromEnv, extendServerWithBrowser } from "../../services/authService.js";
 import {
-  getCachedToken,
-  getOrAcquireToken,
+  getCachedSession,
+  getOrAcquireSession,
   invalidateCachedToken,
+  type CachedSession,
 } from "../../services/tokenCache.js";
-import { httpClient } from "../../lib/httpClient.js";
+import { httpClient, BYTENUT_BROWSER_HEADERS } from "../../lib/httpClient.js";
 import {
   setAutoExtendConfig,
   getAutoExtendConfig,
@@ -15,42 +16,45 @@ const router: IRouter = Router();
 
 const BYTENUT_BASE_URL = "https://www.bytenut.com";
 
-async function fetchWithToken(
-  token: string,
+/** Make an authenticated GET request to Bytenut with full browser headers + cookies. */
+async function fetchWithSession(
+  session: CachedSession,
   path: string,
 ): Promise<{ status: number; body: unknown }> {
   const res = await httpClient.get(`${BYTENUT_BASE_URL}${path}`, {
     headers: {
-      Accept: "application/json, text/plain, */*",
-      "yl-token": token,
+      ...BYTENUT_BROWSER_HEADERS,
+      "yl-token": session.token,
+      ...(session.cookies ? { Cookie: session.cookies } : {}),
     },
     validateStatus: () => true,
   });
   return { status: res.status, body: res.data };
 }
 
-/** Shared helper: get or acquire a token with mutex, with 401 retry. */
-async function resolveToken(
-  username: string,
-  password: string,
-): Promise<string> {
-  const proxy = getProxyFromEnv();
-  return getOrAcquireToken(username, () =>
-    loginWithBrowser(username, password, proxy),
-  );
-}
-
-async function resolveTokenWithRetry(
+/** Get or acquire a full browser session (token + cookies). */
+async function resolveSession(
   username: string,
   password: string,
   log: Request["log"],
-): Promise<string> {
+): Promise<CachedSession> {
   const proxy = getProxyFromEnv();
-  const token = await getOrAcquireToken(username, () => {
-    log.info({ username }, "No cached token — starting browser auth");
-    return loginWithBrowser(username, password, proxy);
+  return getOrAcquireSession(username, async () => {
+    log.info({ username }, "No cached session — starting browser auth");
+    const { ylToken, cookieHeader } = await loginWithBrowser(username, password, proxy);
+    return { token: ylToken, cookies: cookieHeader, cachedAt: Date.now() };
   });
-  return token;
+}
+
+/** Re-acquire session after a 401/403, bypassing cache. */
+async function reacquireSession(
+  username: string,
+  password: string,
+): Promise<CachedSession> {
+  const proxy = getProxyFromEnv();
+  invalidateCachedToken(username);
+  const { ylToken, cookieHeader } = await loginWithBrowser(username, password, proxy);
+  return { token: ylToken, cookies: cookieHeader, cachedAt: Date.now() };
 }
 
 router.post("/servers", async (req: Request, res: Response) => {
@@ -61,14 +65,13 @@ router.post("/servers", async (req: Request, res: Response) => {
   }
 
   try {
-    let token = await resolveTokenWithRetry(username, password, req.log);
-    let { status, body } = await fetchWithToken(token, "/game-panel/api/gpPanelServer/user/servers");
+    let session = await resolveSession(username, password, req.log);
+    let { status, body } = await fetchWithSession(session, "/game-panel/api/gpPanelServer/user/servers");
 
-    if (status === 401) {
-      req.log.warn({ username }, "Got 401 — invalidating cached token and retrying");
-      invalidateCachedToken(username);
-      token = await resolveToken(username, password);
-      ({ status, body } = await fetchWithToken(token, "/game-panel/api/gpPanelServer/user/servers"));
+    if (status === 401 || status === 403) {
+      req.log.warn({ username, status }, "Got auth error — re-logging in");
+      session = await reacquireSession(username, password);
+      ({ status, body } = await fetchWithSession(session, "/game-panel/api/gpPanelServer/user/servers"));
     }
 
     if (status >= 400) {
@@ -91,14 +94,13 @@ router.post("/profile", async (req: Request, res: Response) => {
   }
 
   try {
-    let token = await resolveTokenWithRetry(username, password, req.log);
-    let { status, body } = await fetchWithToken(token, "/common/user/current");
+    let session = await resolveSession(username, password, req.log);
+    let { status, body } = await fetchWithSession(session, "/common/user/current");
 
-    if (status === 401) {
-      req.log.warn({ username }, "Got 401 — invalidating cached token and retrying");
-      invalidateCachedToken(username);
-      token = await resolveToken(username, password);
-      ({ status, body } = await fetchWithToken(token, "/common/user/current"));
+    if (status === 401 || status === 403) {
+      req.log.warn({ username, status }, "Got auth error — re-logging in");
+      session = await reacquireSession(username, password);
+      ({ status, body } = await fetchWithSession(session, "/common/user/current"));
     }
 
     if (status >= 400) {
@@ -121,14 +123,13 @@ router.post("/balance", async (req: Request, res: Response) => {
   }
 
   try {
-    let token = await resolveTokenWithRetry(username, password, req.log);
-    let { status, body } = await fetchWithToken(token, "/common/user/current");
+    let session = await resolveSession(username, password, req.log);
+    let { status, body } = await fetchWithSession(session, "/common/user/current");
 
-    if (status === 401) {
-      req.log.warn({ username }, "Got 401 — invalidating cached token and retrying");
-      invalidateCachedToken(username);
-      token = await resolveToken(username, password);
-      ({ status, body } = await fetchWithToken(token, "/common/user/current"));
+    if (status === 401 || status === 403) {
+      req.log.warn({ username, status }, "Got auth error — re-logging in");
+      session = await reacquireSession(username, password);
+      ({ status, body } = await fetchWithSession(session, "/common/user/current"));
     }
 
     if (status >= 400) {
@@ -163,14 +164,13 @@ router.post("/extension-info/:serverId", async (req: Request, res: Response) => 
   }
 
   try {
-    let token = await resolveTokenWithRetry(username, password, req.log);
-    let { status, body } = await fetchWithToken(token, `/game-panel/api/gp-free-server/extension-info/${serverId}`);
+    let session = await resolveSession(username, password, req.log);
+    let { status, body } = await fetchWithSession(session, `/game-panel/api/gp-free-server/extension-info/${serverId}`);
 
-    if (status === 401) {
-      req.log.warn({ username }, "Got 401 — invalidating cached token and retrying");
-      invalidateCachedToken(username);
-      token = await resolveToken(username, password);
-      ({ status, body } = await fetchWithToken(token, `/game-panel/api/gp-free-server/extension-info/${serverId}`));
+    if (status === 401 || status === 403) {
+      req.log.warn({ username, status }, "Got auth error — re-logging in");
+      session = await reacquireSession(username, password);
+      ({ status, body } = await fetchWithSession(session, `/game-panel/api/gp-free-server/extension-info/${serverId}`));
     }
 
     if (status >= 400) {
@@ -197,9 +197,9 @@ router.post("/extend/:serverId", async (req: Request, res: Response) => {
   const proxy = getProxyFromEnv();
 
   try {
-    const token = await resolveTokenWithRetry(username, password, req.log);
+    const session = await resolveSession(username, password, req.log);
     req.log.info({ username, serverId }, "Starting browser-based extend...");
-    const result = await extendServerWithBrowser(serverId, token, proxy);
+    const result = await extendServerWithBrowser(serverId, session.token, proxy);
 
     if (!result.success) {
       res.status(400).json({ error: result.message, detail: result.data });
