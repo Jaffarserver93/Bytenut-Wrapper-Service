@@ -81,12 +81,13 @@ router.post("/servers", async (req: Request, res: Response) => {
     let { status, body } = await fetchWithSession(session, "/game-panel/api/gpPanelServer/user/servers");
 
     if ((status === 401 || status === 403) && !isCloudflareBlock(body)) {
-      req.log.warn({ username, status }, "Got auth error — re-logging in");
+      req.log.warn({ username, status, body }, "Got auth error on servers — re-logging in");
       session = await reacquireSession(username, password, req.log);
       ({ status, body } = await fetchWithSession(session, "/game-panel/api/gpPanelServer/user/servers"));
     }
 
     if (status >= 400) {
+      req.log.error({ username, status, body }, "Servers upstream error after retry");
       res.status(status).json({ error: "Upstream request failed", upstreamStatus: status, detail: body });
       return;
     }
@@ -110,12 +111,13 @@ router.post("/profile", async (req: Request, res: Response) => {
     let { status, body } = await fetchWithSession(session, "/common/user/current");
 
     if ((status === 401 || status === 403) && !isCloudflareBlock(body)) {
-      req.log.warn({ username, status }, "Got auth error — re-logging in");
+      req.log.warn({ username, status, body }, "Got auth error on profile — re-logging in");
       session = await reacquireSession(username, password, req.log);
       ({ status, body } = await fetchWithSession(session, "/common/user/current"));
     }
 
     if (status >= 400) {
+      req.log.error({ username, status, body }, "Profile upstream error after retry");
       res.status(status).json({ error: "Upstream request failed", upstreamStatus: status, detail: body });
       return;
     }
@@ -139,12 +141,13 @@ router.post("/balance", async (req: Request, res: Response) => {
     let { status, body } = await fetchWithSession(session, "/common/user/current");
 
     if ((status === 401 || status === 403) && !isCloudflareBlock(body)) {
-      req.log.warn({ username, status }, "Got auth error — re-logging in");
+      req.log.warn({ username, status, body }, "Got auth error on balance — re-logging in");
       session = await reacquireSession(username, password, req.log);
       ({ status, body } = await fetchWithSession(session, "/common/user/current"));
     }
 
     if (status >= 400) {
+      req.log.error({ username, status, body }, "Balance upstream error after retry");
       res.status(status).json({ error: "Upstream request failed", upstreamStatus: status, detail: body });
       return;
     }

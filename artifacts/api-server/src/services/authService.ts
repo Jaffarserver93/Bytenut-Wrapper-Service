@@ -663,6 +663,22 @@ export async function loginWithBrowser(
       "Captured browser cookies for API replay",
     );
 
+    // Diagnostic: test API call from within browser to see what headers work
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const browserApiTest: any = await page.evaluate(async (token: string) => {
+      try {
+        const res = await fetch("https://www.bytenut.com/common/user/current", {
+          method: "GET",
+          headers: { "yl-token": token },
+        });
+        const text = await res.text().catch(() => "(unreadable)");
+        return { status: res.status, body: text.slice(0, 500) };
+      } catch (e) {
+        return { error: String(e) };
+      }
+    }, ylToken).catch((e: unknown) => ({ error: String(e) }));
+    logger.info({ browserApiTest }, "Browser-side API test result");
+
     logger.info({ username }, "Successfully extracted yl-token");
     return { ylToken, cookieHeader };
   } catch (err) {
