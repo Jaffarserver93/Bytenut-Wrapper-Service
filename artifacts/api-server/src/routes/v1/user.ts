@@ -1,5 +1,5 @@
 import { Router, type IRouter, type Request, type Response } from "express";
-import { loginWithBrowser, getProxyFromEnv, extendServerWithBrowser } from "../../services/authService.js";
+import { loginWithBrowser, getProxyFromEnv, extendServerWithBrowser, browserFetch } from "../../services/authService.js";
 import {
   getCachedSession,
   getOrAcquireSession,
@@ -145,50 +145,16 @@ router.post("/extension-info/:serverId", async (req: Request, res: Response) => 
   try {
     const session = await resolveSession(username, password, req.log);
     const proxy = getProxyFromEnv();
-
-    // extension-info needs a fresh browser call since it's server-specific
-    const { connect } = await import("puppeteer-real-browser").catch(() => {
-      throw new Error("puppeteer-real-browser not available");
-    }) as any;
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let browser: any = null;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let page: any = null;
-
-    try {
-      const proxyArg = proxy
-        ? [`--proxy-server=http://${encodeURIComponent(proxy.username ?? "")}:${encodeURIComponent(proxy.password ?? "")}@${proxy.host}:${proxy.port}`, "--ignore-certificate-errors"]
-        : [];
-
-      const result = await connect({
-        headless: false,
-        turnstile: true,
-        fingerprint: true,
-        args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", ...proxyArg],
-        proxy: proxy ? { host: proxy.host, port: proxy.port, username: proxy.username, password: proxy.password } : {},
-        customConfig: {},
-        connectOption: {},
-      });
-
-      browser = result.browser;
-      page = result.page;
-
-      await page.goto(`https://www.bytenut.com/free-gamepanel/${serverId}`, { waitUntil: "domcontentloaded", timeout: 60000 });
-      await page.evaluate((token: string) => { localStorage.setItem("yl-token", token); }, session.token);
-
-      const data = await page.evaluate(async (args: { serverId: string; token: string }) => {
-        const res = await fetch(`/game-panel/api/gp-free-server/extension-info/${args.serverId}`, {
-          headers: { "yl-token": args.token },
-        });
-        return res.ok ? res.json().catch(() => null) : null;
-      }, { serverId, token: session.token });
-
-      res.json({ extensionInfo: data });
-    } finally {
-      if (page) await page.close().catch(() => {});
-      if (browser) await browser.close().catch(() => {});
+    const data = await browserFetch(
+      `/game-panel/api/gp-free-server/extension-info/${serverId}`,
+      session.token,
+      proxy,
+    );
+    if (!data) {
+      res.status(502).json({ error: "Could not fetch extension info from Bytenut" });
+      return;
     }
+    res.json({ extensionInfo: data });
   } catch (err) {
     req.log.error({ username, serverId, err }, "Extension info fetch failed");
     res.status(500).json({ error: "Failed to fetch extension info", detail: err instanceof Error ? err.message : String(err) });

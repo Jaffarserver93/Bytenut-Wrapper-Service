@@ -172,6 +172,76 @@ const STEALTH_ARGS = [
   "--lang=en-US,en",
 ];
 
+/**
+ * Make a single authenticated GET request to Bytenut from inside a real browser
+ * (bypassing Cloudflare's TLS fingerprint check that blocks axios).
+ * Opens a minimal browser, warms up Cloudflare cookies, injects the yl-token,
+ * fetches the path, and returns the parsed JSON (or null on failure).
+ */
+export async function browserFetch(
+  path: string,
+  ylToken: string,
+  proxy: ProxyConfig | null = null,
+): Promise<unknown> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { connect } = _require("puppeteer-real-browser") as any;
+  const effectiveProxy = proxy ?? getProxyFromEnv();
+  const proxyArgs = buildProxyArgs(effectiveProxy);
+  const connectProxy = buildConnectProxy(effectiveProxy);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let browser: any = null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let page: any = null;
+
+  try {
+    const result = await connect({
+      headless: false,
+      turnstile: true,
+      fingerprint: true,
+      args: [...STEALTH_ARGS, ...proxyArgs],
+      proxy: connectProxy,
+      customConfig: {},
+      connectOption: {},
+    });
+
+    browser = result.browser;
+    page = result.page;
+
+    if (effectiveProxy?.username && effectiveProxy?.password) {
+      await page.authenticate({ username: effectiveProxy.username, password: effectiveProxy.password });
+    }
+
+    // Warm up Cloudflare cookies
+    await page.goto(BYTENUT_BASE_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await waitForCloudflare(page, 30000);
+    await sleep(1000);
+
+    // Inject token then fetch
+    const data = await page.evaluate(
+      async (args: { path: string; token: string; base: string }) => {
+        try {
+          const res = await fetch(`${args.base}${args.path}`, {
+            headers: { "yl-token": args.token },
+          });
+          return res.ok ? await res.json().catch(() => null) : null;
+        } catch {
+          return null;
+        }
+      },
+      { path, token: ylToken, base: BYTENUT_BASE_URL },
+    );
+
+    return data;
+  } catch (err) {
+    logger.error({ err, path }, "browserFetch failed");
+    return null;
+  } finally {
+    if (page) await page.close().catch(() => {});
+    if (browser) await browser.close().catch(() => {});
+  }
+}
+
 export async function extendServerWithBrowser(
   serverId: string,
   ylToken: string,

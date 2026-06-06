@@ -1,5 +1,4 @@
 import { logger } from "../lib/logger.js";
-import { httpClient, BYTENUT_BROWSER_HEADERS } from "../lib/httpClient.js";
 import {
   getCachedSession,
   setCachedSession,
@@ -8,10 +7,10 @@ import {
 import {
   loginWithBrowser,
   extendServerWithBrowser,
+  browserFetch,
   getProxyFromEnv,
 } from "./authService.js";
 
-const BYTENUT_BASE_URL = "https://www.bytenut.com";
 const POLL_INTERVAL_MS = 60_000;
 
 export interface AutoExtendConfig {
@@ -82,19 +81,13 @@ async function fetchExtensionInfo(
   serverId: string,
 ): Promise<{ minutesUntilExpiration: number; canExtend: boolean } | null> {
   try {
-    const res = await httpClient.get(
-      `${BYTENUT_BASE_URL}/game-panel/api/gp-free-server/extension-info/${serverId}`,
-      {
-        headers: {
-          ...BYTENUT_BROWSER_HEADERS,
-          "yl-token": session.token,
-          ...(session.cookies ? { Cookie: session.cookies } : {}),
-        },
-        validateStatus: () => true,
-      },
-    );
-    if (res.status !== 200) return null;
-    return res.data?.data ?? null;
+    const proxy = getProxyFromEnv();
+    const result = await browserFetch(
+      `/game-panel/api/gp-free-server/extension-info/${serverId}`,
+      session.token,
+      proxy,
+    ) as { data?: { minutesUntilExpiration: number; canExtend: boolean } } | null;
+    return result?.data ?? null;
   } catch {
     return null;
   }
