@@ -1,6 +1,6 @@
 # Bytenut Dashboard
 
-A pnpm monorepo with three artifacts: an Express API server that bypasses Cloudflare WAF on bytenut.com, a React/Vite dashboard, and a mockup sandbox. The API server uses `puppeteer-real-browser` + an Oxylabs datacenter proxy to extract `yl-tokens` and proxy Bytenut's game server APIs.
+A pnpm monorepo with three artifacts: an Express API server that bypasses Cloudflare WAF on bytenut.com, a React/Vite dashboard, and a mockup sandbox. The API server uses `puppeteer-real-browser` + an optional Oxylabs datacenter proxy to extract `yl-tokens` and proxy Bytenut's game server APIs.
 
 ## Artifacts
 
@@ -12,30 +12,66 @@ A pnpm monorepo with three artifacts: an Express API server that bypasses Cloudf
 
 ## Run & Operate
 
+### On Replit
 - `pnpm --filter @workspace/api-server run dev` — build + start API server (Xvfb + esbuild + node)
 - `pnpm --filter @workspace/dashboard run dev` — start Vite dev server
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
 
+### On Termux (ARM64 / proot-distro Debian)
+- `bash start.sh` — starts both services in tmux (window 0 = api, window 1 = dashboard)
+- `bash run-api.sh` — builds and starts API server; auto-installs Xvfb if missing
+- `bash run-dashboard.sh` — starts Vite with ARM64-safe config; auto-installs ARM64 rollup if missing
+- `.env` file must be at the project root with at least `DATABASE_URL=...`
+
+#### First-time Termux setup
+```bash
+git clone <repo> ~/bit
+cd ~/bit
+cp .env.example .env       # edit and add DATABASE_URL
+pnpm install --no-frozen-lockfile
+bash start.sh
+```
+
+#### On Termux login fails
+Check these in order:
+1. Is Xvfb installed? `run-api.sh` auto-installs it via `apt-get`
+2. Is `DISPLAY=:99` exported? Check tmux window 0 output
+3. Are proxy env vars set in `.env`? If `PROXY_HOST` is set but the proxy is unreachable, **remove those lines** — Termux is a residential IP and doesn't need a proxy
+4. The error log will now say `Navigation failed at "homepage warmup"` with the exact cause
+
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
+- pnpm workspaces, Node.js 20 (Termux) / 24 (Replit), TypeScript 5.9
 - **API**: Express 5, pino logger
-- **Frontend**: React 19, Vite, Tailwind CSS, shadcn/ui, React Query, Wouter
+- **Frontend**: React 19, Vite 7, Tailwind CSS v4, shadcn/ui, React Query, Wouter
 - **Browser automation**: `puppeteer-real-browser` (rebrowser patches, Turnstile bypass)
-- **Proxy**: Oxylabs datacenter proxy (`dc.oxylabs.io:8000`) — required because Cloudflare WAF blocks cloud IPs
+- **Proxy**: Oxylabs datacenter proxy (`dc.oxylabs.io:8000`) — only needed for cloud/datacenter IPs; Termux (residential) can skip it
 - **Build**: esbuild (ESM bundle), Xvfb for headless Chromium on Linux
+
+## ARM64 / Termux Native Packages
+
+All native Rust/C++ binaries are explicitly listed in root `package.json` `optionalDependencies` for both `x64` and `arm64`. The `.npmrc` has `supportedArchitectures` set so the lockfile includes both. After any `pnpm install --force` on Replit, the lockfile will contain ARM64 binaries that Termux can download.
+
+| Package | x64 | arm64 |
+|---|---|---|
+| `@rollup/rollup-linux-*-gnu/musl` | ✅ | ✅ |
+| `@esbuild/linux-*` | ✅ | ✅ |
+| `lightningcss-linux-*-gnu` | ✅ | ✅ |
+| `@tailwindcss/oxide-linux-*-gnu` | ✅ | ✅ |
+
+If a new native package breaks on ARM64, add its `arm64` variant to root `package.json` `optionalDependencies` and run `pnpm install --force` on Replit.
 
 ## Where things live
 
 ### API Server (`artifacts/api-server/src/`)
 
-- `services/authService.ts` — puppeteer-real-browser login + `extendServerWithBrowser()` (opens browser, injects yl-token, clicks extend, intercepts network response)
+- `services/authService.ts` — puppeteer-real-browser login + `extendServerWithBrowser()`; `assertNotErrorPage()` detects proxy/display failures early
 - `services/tokenCache.ts` — in-memory `yl-token` cache (`Map`, 1hr TTL, invalidated on `401`)
 - `services/autoExtendService.ts` — background poller (60s interval); auto-extends servers when time drops below threshold
 - `routes/v1/auth.ts` — `POST /api/v1/auth/login`
-- `routes/v1/user.ts` — all user endpoints (see below)
-- `lib/httpClient.ts` — axios instance with Oxylabs proxy config (must use `protocol: "http"`, not `"https"`)
+- `routes/v1/user.ts` — all user endpoints
+- `lib/httpClient.ts` — axios instance with optional Oxylabs proxy config (must use `protocol: "http"`, not `"https"`)
 
 ### Dashboard (`artifacts/dashboard/src/`)
 
@@ -47,6 +83,14 @@ A pnpm monorepo with three artifacts: an Express API server that bypasses Cloudf
 - `lib/api.ts` — all `fetch` wrappers for the API server
 - `context/AuthContext.tsx` — credentials stored in `localStorage`
 
+### Termux scripts (project root)
+
+- `start.sh` — launches tmux with both services
+- `run-api.sh` — auto-installs Xvfb if missing, sets DISPLAY=:99, builds + starts API
+- `run-dashboard.sh` — auto-installs ARM64 rollup if missing, starts Vite with `vite.termux.config.ts`
+- `setup-db.sh` — helper to write DATABASE_URL into `.env`
+- `artifacts/dashboard/vite.termux.config.ts` — Vite config without Replit-specific plugins (no runtimeErrorOverlay, no cartographer, no devBanner, no top-level await)
+
 ## API Endpoints
 
 | Method | Path | Description |
@@ -54,7 +98,7 @@ A pnpm monorepo with three artifacts: an Express API server that bypasses Cloudf
 | `GET` | `/api/healthz` | Health check |
 | `POST` | `/api/v1/auth/login` | Returns `yl-token` (cached or fresh browser session) |
 | `POST` | `/api/v1/user/profile` | Full Bytenut user profile |
-| `POST` | `/api/v1/user/balance` | Balance summary: `money`, `inviteMoney`, `total`, `points`, `vipLevel`, `consumeAll` |
+| `POST` | `/api/v1/user/balance` | Balance summary |
 | `POST` | `/api/v1/user/servers` | List of game servers |
 | `POST` | `/api/v1/user/extension-info/:serverId` | Extension eligibility, cooldown, minutes remaining |
 | `POST` | `/api/v1/user/extend/:serverId` | Manually extend a server (+60 min, full browser flow) |
@@ -81,8 +125,10 @@ Config is stored in-memory (resets on server restart). The dashboard shows a tog
 
 ## Gotchas
 
-- Cloudflare WAF blocks Replit/cloud IPs — Oxylabs residential/DC proxy is required for all browser sessions.
-- `Xvfb :99 -screen 0 1280x800x24 &` + `export DISPLAY=:99` must run before Chromium on headless Linux (handled in the `dev` script).
+- **Cloudflare WAF** blocks cloud/datacenter IPs — proxy needed on Replit; NOT needed on Termux (residential IP).
+- **`headless: false` requires a display** — Xvfb must run before starting the API. `run-api.sh` auto-installs and starts it.
+- **`chrome-error://chromewebdata/`** means Chromium failed to connect (no display, or proxy unreachable). `assertNotErrorPage()` now throws a clear diagnostic instead of "username input not found".
+- **Xvfb on Termux** — installed via `apt-get install -y xvfb` inside proot-distro Debian. `run-api.sh` does this automatically.
 - If Bytenut updates their login page DOM, update username/password selectors in `authService.ts`.
 - The extend endpoint is `POST /game-panel/api/gp-free-server/extend-time/:serverId` — NOT `extend/:serverId` (that 404s).
 - `puppeteer-real-browser` and `rebrowser-*` packages must stay in `external[]` in `build.mjs`.

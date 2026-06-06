@@ -64,6 +64,28 @@ function buildConnectProxy(
   return obj;
 }
 
+/**
+ * Throws a clear error when the browser lands on chrome-error://chromewebdata/
+ * which means the navigation (or proxy connection) completely failed.
+ */
+async function assertNotErrorPage(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  page: any,
+  context: string,
+): Promise<void> {
+  const url: string = page.url();
+  if (url.startsWith("chrome-error://") || url.startsWith("about:blank")) {
+    const display = process.env["DISPLAY"] ?? "(not set)";
+    const hasProxy = !!(process.env["PROXY_HOST"]);
+    throw new Error(
+      `Navigation failed at "${context}" — browser landed on error page (${url}). ` +
+        `DISPLAY=${display}, proxy configured=${hasProxy}. ` +
+        `On Termux: ensure Xvfb is running (auto-installed by run-api.sh) and DISPLAY=:99 is set. ` +
+        `If proxy env vars are set but unreachable, remove them from .env to connect directly.`,
+    );
+  }
+}
+
 async function waitForCloudflare(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   page: any,
@@ -195,6 +217,7 @@ export async function extendServerWithBrowser(
       waitUntil: "domcontentloaded",
       timeout: 60000,
     });
+    await assertNotErrorPage(page, "extend homepage warmup");
     await waitForCloudflare(page, 45000);
     await sleep(2000);
 
@@ -209,6 +232,7 @@ export async function extendServerWithBrowser(
       waitUntil: "domcontentloaded",
       timeout: 60000,
     });
+    await assertNotErrorPage(page, "free-gamepanel page");
     await waitForCloudflare(page, 45000);
     await sleep(5000); // Let the Vue app fully render
 
@@ -391,6 +415,7 @@ export async function loginWithBrowser(
       waitUntil: "domcontentloaded",
       timeout: 60000,
     });
+    await assertNotErrorPage(page, "homepage warmup");
     await waitForCloudflare(page, 45000);
     await sleep(2000);
 
@@ -400,6 +425,7 @@ export async function loginWithBrowser(
       waitUntil: "domcontentloaded",
       timeout: 60000,
     });
+    await assertNotErrorPage(page, "login page");
     await waitForCloudflare(page, 45000);
     await sleep(2000);
 
