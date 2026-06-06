@@ -19,8 +19,8 @@ router.post("/login", async (req: Request, res: Response) => {
     const proxy = getProxyFromEnv();
     const session = await getOrAcquireSession(username, async () => {
       req.log.info({ username }, "No cached session — starting browser auth");
-      const { ylToken, cookieHeader } = await loginWithBrowser(username, password, proxy);
-      return { token: ylToken, cookies: cookieHeader, cachedAt: Date.now() };
+      const { ylToken, cookieHeader, profile, servers } = await loginWithBrowser(username, password, proxy);
+      return { token: ylToken, cookies: cookieHeader, cachedAt: Date.now(), profile, servers };
     });
     res.json({ ylToken: session.token, cached: false });
   } catch (err) {

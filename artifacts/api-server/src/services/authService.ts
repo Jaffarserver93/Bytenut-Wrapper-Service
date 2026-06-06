@@ -663,24 +663,40 @@ export async function loginWithBrowser(
       "Captured browser cookies for API replay",
     );
 
-    // Diagnostic: test API call from within browser to see what headers work
+    // Fetch profile and servers from INSIDE the browser while the Cloudflare
+    // session is active. Replaying cf_clearance cookies through axios doesn't
+    // work because Cloudflare binds them to the browser TLS fingerprint.
+    logger.info({ username }, "Fetching profile and servers via browser...");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const browserApiTest: any = await page.evaluate(async (token: string) => {
-      try {
-        const res = await fetch("https://www.bytenut.com/common/user/current", {
-          method: "GET",
-          headers: { "yl-token": token },
-        });
-        const text = await res.text().catch(() => "(unreadable)");
-        return { status: res.status, body: text.slice(0, 500) };
-      } catch (e) {
-        return { error: String(e) };
-      }
-    }, ylToken).catch((e: unknown) => ({ error: String(e) }));
-    logger.info({ browserApiTest }, "Browser-side API test result");
+    const [profileData, serversData]: [any, any] = await Promise.all([
+      page.evaluate(async (token: string) => {
+        try {
+          const res = await fetch("/common/user/current", {
+            headers: { "yl-token": token },
+          });
+          return { status: res.status, data: res.ok ? await res.json().catch(() => null) : null };
+        } catch (e) {
+          return { error: String(e) };
+        }
+      }, ylToken).catch((e: unknown) => ({ error: String(e) })),
+      page.evaluate(async (token: string) => {
+        try {
+          const res = await fetch("/game-panel/api/gpPanelServer/user/servers", {
+            headers: { "yl-token": token },
+          });
+          return { status: res.status, data: res.ok ? await res.json().catch(() => null) : null };
+        } catch (e) {
+          return { error: String(e) };
+        }
+      }, ylToken).catch((e: unknown) => ({ error: String(e) })),
+    ]);
+    logger.info(
+      { profileStatus: profileData?.status, serversStatus: serversData?.status },
+      "Browser-fetched API data",
+    );
 
     logger.info({ username }, "Successfully extracted yl-token");
-    return { ylToken, cookieHeader };
+    return { ylToken, cookieHeader, profile: profileData?.data ?? null, servers: serversData?.data ?? null };
   } catch (err) {
     logger.error({ err, username }, "Browser authentication failed");
     throw err;

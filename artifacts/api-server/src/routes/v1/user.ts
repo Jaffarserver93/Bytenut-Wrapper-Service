@@ -6,7 +6,6 @@ import {
   invalidateCachedToken,
   type CachedSession,
 } from "../../services/tokenCache.js";
-import { httpClient, BYTENUT_BROWSER_HEADERS } from "../../lib/httpClient.js";
 import {
   setAutoExtendConfig,
   getAutoExtendConfig,
@@ -14,25 +13,7 @@ import {
 
 const router: IRouter = Router();
 
-const BYTENUT_BASE_URL = "https://www.bytenut.com";
-
-/** Make an authenticated GET request to Bytenut with full browser headers + cookies. */
-async function fetchWithSession(
-  session: CachedSession,
-  path: string,
-): Promise<{ status: number; body: unknown }> {
-  const res = await httpClient.get(`${BYTENUT_BASE_URL}${path}`, {
-    headers: {
-      ...BYTENUT_BROWSER_HEADERS,
-      "yl-token": session.token,
-      ...(session.cookies ? { Cookie: session.cookies } : {}),
-    },
-    validateStatus: () => true,
-  });
-  return { status: res.status, body: res.data };
-}
-
-/** Get or acquire a full browser session (token + cookies). */
+/** Get or acquire a full browser session (token + cookies + pre-fetched data). */
 async function resolveSession(
   username: string,
   password: string,
@@ -41,19 +22,12 @@ async function resolveSession(
   const proxy = getProxyFromEnv();
   return getOrAcquireSession(username, async () => {
     log.info({ username }, "No cached session — starting browser auth");
-    const { ylToken, cookieHeader } = await loginWithBrowser(username, password, proxy);
-    return { token: ylToken, cookies: cookieHeader, cachedAt: Date.now() };
+    const { ylToken, cookieHeader, profile, servers } = await loginWithBrowser(username, password, proxy);
+    return { token: ylToken, cookies: cookieHeader, cachedAt: Date.now(), profile, servers };
   });
 }
 
-/** Returns true if the response body looks like a Cloudflare block page (not a real auth error). */
-function isCloudflareBlock(body: unknown): boolean {
-  if (typeof body !== "string") return false;
-  return body.includes("Cloudflare") && (body.includes("blocked") || body.includes("cf-error"));
-}
-
-/** Re-acquire session after a real auth error, bypassing cache.
- *  Uses the shared loginInFlight map so parallel requests share one browser session. */
+/** Force a fresh browser login, bypassing cache. */
 async function reacquireSession(
   username: string,
   password: string,
@@ -61,11 +35,10 @@ async function reacquireSession(
 ): Promise<CachedSession> {
   const proxy = getProxyFromEnv();
   invalidateCachedToken(username);
-  // Use getOrAcquireSession so concurrent re-login calls share one browser session
   return getOrAcquireSession(username, async () => {
     log.info({ username }, "Re-acquiring session with fresh browser login...");
-    const { ylToken, cookieHeader } = await loginWithBrowser(username, password, proxy);
-    return { token: ylToken, cookies: cookieHeader, cachedAt: Date.now() };
+    const { ylToken, cookieHeader, profile, servers } = await loginWithBrowser(username, password, proxy);
+    return { token: ylToken, cookies: cookieHeader, cachedAt: Date.now(), profile, servers };
   });
 }
 
@@ -78,21 +51,18 @@ router.post("/servers", async (req: Request, res: Response) => {
 
   try {
     let session = await resolveSession(username, password, req.log);
-    let { status, body } = await fetchWithSession(session, "/game-panel/api/gpPanelServer/user/servers");
 
-    if ((status === 401 || status === 403) && !isCloudflareBlock(body)) {
-      req.log.warn({ username, status, body }, "Got auth error on servers — re-logging in");
+    if (!session.servers) {
+      req.log.warn({ username }, "No servers data in session — re-acquiring");
       session = await reacquireSession(username, password, req.log);
-      ({ status, body } = await fetchWithSession(session, "/game-panel/api/gpPanelServer/user/servers"));
     }
 
-    if (status >= 400) {
-      req.log.error({ username, status, body }, "Servers upstream error after retry");
-      res.status(status).json({ error: "Upstream request failed", upstreamStatus: status, detail: body });
+    if (!session.servers) {
+      res.status(502).json({ error: "Could not fetch servers from Bytenut" });
       return;
     }
 
-    res.json({ servers: body });
+    res.json({ servers: session.servers });
   } catch (err) {
     req.log.error({ username, err }, "Servers fetch failed");
     res.status(500).json({ error: "Failed to fetch servers", detail: err instanceof Error ? err.message : String(err) });
@@ -108,21 +78,18 @@ router.post("/profile", async (req: Request, res: Response) => {
 
   try {
     let session = await resolveSession(username, password, req.log);
-    let { status, body } = await fetchWithSession(session, "/common/user/current");
 
-    if ((status === 401 || status === 403) && !isCloudflareBlock(body)) {
-      req.log.warn({ username, status, body }, "Got auth error on profile — re-logging in");
+    if (!session.profile) {
+      req.log.warn({ username }, "No profile data in session — re-acquiring");
       session = await reacquireSession(username, password, req.log);
-      ({ status, body } = await fetchWithSession(session, "/common/user/current"));
     }
 
-    if (status >= 400) {
-      req.log.error({ username, status, body }, "Profile upstream error after retry");
-      res.status(status).json({ error: "Upstream request failed", upstreamStatus: status, detail: body });
+    if (!session.profile) {
+      res.status(502).json({ error: "Could not fetch profile from Bytenut" });
       return;
     }
 
-    res.json({ profile: body });
+    res.json({ profile: session.profile });
   } catch (err) {
     req.log.error({ username, err }, "Profile fetch failed");
     res.status(500).json({ error: "Failed to fetch profile", detail: err instanceof Error ? err.message : String(err) });
@@ -138,21 +105,18 @@ router.post("/balance", async (req: Request, res: Response) => {
 
   try {
     let session = await resolveSession(username, password, req.log);
-    let { status, body } = await fetchWithSession(session, "/common/user/current");
 
-    if ((status === 401 || status === 403) && !isCloudflareBlock(body)) {
-      req.log.warn({ username, status, body }, "Got auth error on balance — re-logging in");
+    if (!session.profile) {
+      req.log.warn({ username }, "No profile data in session for balance — re-acquiring");
       session = await reacquireSession(username, password, req.log);
-      ({ status, body } = await fetchWithSession(session, "/common/user/current"));
     }
 
-    if (status >= 400) {
-      req.log.error({ username, status, body }, "Balance upstream error after retry");
-      res.status(status).json({ error: "Upstream request failed", upstreamStatus: status, detail: body });
+    if (!session.profile) {
+      res.status(502).json({ error: "Could not fetch balance from Bytenut" });
       return;
     }
 
-    const d = (body as { data?: Record<string, unknown> })?.data ?? {};
+    const d = (session.profile as { data?: Record<string, unknown> })?.data ?? {};
     res.json({
       balance: {
         money: d["money"] ?? 0,
@@ -179,21 +143,52 @@ router.post("/extension-info/:serverId", async (req: Request, res: Response) => 
   }
 
   try {
-    let session = await resolveSession(username, password, req.log);
-    let { status, body } = await fetchWithSession(session, `/game-panel/api/gp-free-server/extension-info/${serverId}`);
+    const session = await resolveSession(username, password, req.log);
+    const proxy = getProxyFromEnv();
 
-    if ((status === 401 || status === 403) && !isCloudflareBlock(body)) {
-      req.log.warn({ username, status }, "Got auth error — re-logging in");
-      session = await reacquireSession(username, password, req.log);
-      ({ status, body } = await fetchWithSession(session, `/game-panel/api/gp-free-server/extension-info/${serverId}`));
+    // extension-info needs a fresh browser call since it's server-specific
+    const { connect } = await import("puppeteer-real-browser").catch(() => {
+      throw new Error("puppeteer-real-browser not available");
+    }) as any;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let browser: any = null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let page: any = null;
+
+    try {
+      const proxyArg = proxy
+        ? [`--proxy-server=http://${encodeURIComponent(proxy.username ?? "")}:${encodeURIComponent(proxy.password ?? "")}@${proxy.host}:${proxy.port}`, "--ignore-certificate-errors"]
+        : [];
+
+      const result = await connect({
+        headless: false,
+        turnstile: true,
+        fingerprint: true,
+        args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", ...proxyArg],
+        proxy: proxy ? { host: proxy.host, port: proxy.port, username: proxy.username, password: proxy.password } : {},
+        customConfig: {},
+        connectOption: {},
+      });
+
+      browser = result.browser;
+      page = result.page;
+
+      await page.goto(`https://www.bytenut.com/free-gamepanel/${serverId}`, { waitUntil: "domcontentloaded", timeout: 60000 });
+      await page.evaluate((token: string) => { localStorage.setItem("yl-token", token); }, session.token);
+
+      const data = await page.evaluate(async (args: { serverId: string; token: string }) => {
+        const res = await fetch(`/game-panel/api/gp-free-server/extension-info/${args.serverId}`, {
+          headers: { "yl-token": args.token },
+        });
+        return res.ok ? res.json().catch(() => null) : null;
+      }, { serverId, token: session.token });
+
+      res.json({ extensionInfo: data });
+    } finally {
+      if (page) await page.close().catch(() => {});
+      if (browser) await browser.close().catch(() => {});
     }
-
-    if (status >= 400) {
-      res.status(status).json({ error: "Upstream request failed", upstreamStatus: status, detail: body });
-      return;
-    }
-
-    res.json({ extensionInfo: body });
   } catch (err) {
     req.log.error({ username, serverId, err }, "Extension info fetch failed");
     res.status(500).json({ error: "Failed to fetch extension info", detail: err instanceof Error ? err.message : String(err) });

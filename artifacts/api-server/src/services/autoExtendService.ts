@@ -72,9 +72,9 @@ async function getOrFreshSession(username: string, password: string): Promise<Ca
   if (cached) return cached;
   logger.info({ username }, "[auto-extend] No cached session — running browser auth");
   const proxy = getProxyFromEnv();
-  const { ylToken, cookieHeader } = await loginWithBrowser(username, password, proxy);
-  setCachedSession(username, ylToken, cookieHeader);
-  return { token: ylToken, cookies: cookieHeader, cachedAt: Date.now() };
+  const { ylToken, cookieHeader, profile, servers } = await loginWithBrowser(username, password, proxy);
+  setCachedSession(username, { token: ylToken, cookies: cookieHeader, profile, servers });
+  return { token: ylToken, cookies: cookieHeader, cachedAt: Date.now(), profile, servers };
 }
 
 async function fetchExtensionInfo(

@@ -1,2 +1,3 @@
 - [Cloudflare WAF blocks datacenter IPs](cloudflare-datacenter-block.md) — Bytenut.com blocks Replit/cloud IPs at WAF level; residential proxy required for browser auth to work.
 - [Proxy protocol default bug](proxy-protocol-default.md) — PROXY_PROTOCOL must default to "http" not "https"; credentials must be embedded in --proxy-server URL for HTTPS CONNECT tunneling.
+- [cf_clearance cannot be replayed via axios](cf-clearance-axios.md) — Cloudflare cf_clearance cookies are TLS-fingerprint-bound; all Bytenut API calls must be made from inside the puppeteer browser session, not replayed through axios.
