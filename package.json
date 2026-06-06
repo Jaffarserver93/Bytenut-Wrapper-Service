@@ -17,6 +17,12 @@
     "@rollup/rollup-linux-x64-gnu": "4.60.3",
     "@rollup/rollup-linux-arm64-gnu": "4.60.3",
     "@rollup/rollup-linux-x64-musl": "4.60.3",
-    "@rollup/rollup-linux-arm64-musl": "4.60.3"
+    "@rollup/rollup-linux-arm64-musl": "4.60.3",
+    "@esbuild/linux-x64": "0.27.3",
+    "@esbuild/linux-arm64": "0.27.3",
+    "lightningcss-linux-x64-gnu": "1.32.0",
+    "lightningcss-linux-arm64-gnu": "1.32.0",
+    "@tailwindcss/oxide-linux-x64-gnu": "4.3.0",
+    "@tailwindcss/oxide-linux-arm64-gnu": "4.3.0"
   }
 }
